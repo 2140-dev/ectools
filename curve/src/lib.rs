@@ -6,6 +6,17 @@ pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
     /// y^2 = x^3 + Ax + B
     const A: FieldElement<F>;
     const B: FieldElement<F>;
+
+    fn j_invariant() -> FieldElement<F> {
+        FieldElement::from_u64(1728)
+            * (FieldElement::from_u64(4) * Self::A * Self::A * Self::A)
+            * Self::discriminant().inv()
+    }
+
+    fn discriminant() -> FieldElement<F> {
+        FieldElement::from_u64(4) * Self::A * Self::A * Self::A
+            + FieldElement::from_u64(27) * Self::B * Self::B
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
@@ -156,7 +167,7 @@ impl Scalar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field::Secp256k1FieldOrder as Fp;
+    use field::{Secp256k1FieldOrder as Fp, Secp256k1GroupOrder};
 
     type Fe = FieldElement<Fp>;
     type Pt = Point<Fp, Secp256k1Curve>;
@@ -384,5 +395,17 @@ mod tests {
             0xFF, 0xFF, 0xFF, 0xFF,
         ]);
         assert!(generator().mul(n).is_infinity());
+    }
+
+    #[test]
+    fn j_invariant() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        struct E;
+        impl Curve<Secp256k1GroupOrder> for E {
+            const A: FieldElement<Secp256k1GroupOrder> = FieldElement::ONE;
+            const B: FieldElement<Secp256k1GroupOrder> = FieldElement::ZERO;
+        }
+        let j_inv = E::j_invariant();
+        assert_eq!(FieldElement::from_u64(1728), j_inv);
     }
 }
