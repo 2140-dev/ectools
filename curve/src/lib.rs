@@ -1,21 +1,25 @@
 use core::fmt;
-use core::marker::PhantomData;
-use field::{FieldElement, FieldOrder};
+use field::{FieldElement, FieldOrder, Secp256k1FieldOrder};
 
+/// y^2 = x^3 + Ax + B
 pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
-    /// y^2 = x^3 + Ax + B
-    const A: FieldElement<F>;
-    const B: FieldElement<F>;
+    fn a(&self) -> FieldElement<F>;
+    fn b(&self) -> FieldElement<F>;
 
-    fn j_invariant() -> FieldElement<F> {
-        FieldElement::from_u64(1728)
-            * (FieldElement::from_u64(4) * Self::A * Self::A * Self::A)
-            * Self::discriminant().inv()
+    fn add(&self, p1: Point<F>, p2: Point<F>) -> Point<F> {
+        p1.add(&p2, self.a())
     }
 
-    fn discriminant() -> FieldElement<F> {
-        FieldElement::from_u64(4) * Self::A * Self::A * Self::A
-            + FieldElement::from_u64(27) * Self::B * Self::B
+    fn multiply(&self, scalar: Scalar, point: Point<F>) -> Point<F> {
+        point.mul(scalar, self.a())
+    }
+
+    fn j_invariant(&self) -> FieldElement<F> {
+        let a = self.a();
+        let b = self.b();
+        let four_a_cubed = FieldElement::from_u64(4) * a * a * a;
+        let discriminant = four_a_cubed + FieldElement::from_u64(27) * b * b;
+        FieldElement::from_u64(1728) * four_a_cubed * discriminant.inv()
     }
 }
 
@@ -23,7 +27,10 @@ pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
 pub struct Secp256k1Curve;
 
 impl Secp256k1Curve {
-    pub const GENERATOR: Point<field::Secp256k1FieldOrder, Self> = Point::Affine {
+    pub const A: FieldElement<Secp256k1FieldOrder> = FieldElement::ZERO;
+    pub const B: FieldElement<Secp256k1FieldOrder> = FieldElement::from_u64(7);
+
+    pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::Affine {
         x: FieldElement::from_limbs_unchecked([
             0x59F2815B16F81798,
             0x029BFCDB2DCE28D9,
@@ -38,56 +45,40 @@ impl Secp256k1Curve {
         ]),
     };
 
-    pub fn point_from_scalar(scalar: Scalar) -> Point<field::Secp256k1FieldOrder, Self> {
-        Self::GENERATOR.mul(scalar)
+    pub fn point_from_scalar(scalar: Scalar) -> Point<Secp256k1FieldOrder> {
+        Self.multiply(scalar, Self::GENERATOR)
     }
 }
 
-impl Curve<field::Secp256k1FieldOrder> for Secp256k1Curve {
-    const A: FieldElement<field::Secp256k1FieldOrder> = FieldElement::ZERO;
-    const B: FieldElement<field::Secp256k1FieldOrder> = FieldElement::from_u64(7);
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
-pub struct Infinity<F: FieldOrder, C: Curve<F>> {
-    _m1: PhantomData<C>,
-    _m2: PhantomData<F>,
-}
-
-impl<F: FieldOrder, C: Curve<F>> Infinity<F, C> {
-    pub const fn new() -> Self {
-        Self {
-            _m1: PhantomData,
-            _m2: PhantomData,
-        }
+impl Curve<Secp256k1FieldOrder> for Secp256k1Curve {
+    fn a(&self) -> FieldElement<Secp256k1FieldOrder> {
+        Self::A
     }
-}
 
-impl<F: FieldOrder, C: Curve<F>> Default for Infinity<F, C> {
-    fn default() -> Self {
-        Self::new()
+    fn b(&self) -> FieldElement<Secp256k1FieldOrder> {
+        Self::B
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
-pub enum Point<F: FieldOrder, EC: Curve<F>> {
+pub enum Point<F: FieldOrder> {
     Affine {
         x: FieldElement<F>,
         y: FieldElement<F>,
     },
-    Infinity(Infinity<F, EC>),
+    Infinity,
 }
 
-impl<F: FieldOrder, EC: Curve<F>> Point<F, EC> {
-    pub fn add(&self, other: &Self) -> Self {
+impl<F: FieldOrder> Point<F> {
+    fn add(&self, other: &Self, a: FieldElement<F>) -> Self {
         match self {
             Self::Affine { x: x1, y: y1 } => match other {
                 Self::Affine { x: x2, y: y2 } => {
                     if x1 == x2 && y1 == y2 {
-                        return self.double();
+                        return self.double(a);
                     }
                     if x1 == x2 && y1 + y2 == FieldElement::ZERO {
-                        Self::Infinity(Infinity::new())
+                        Self::Infinity
                     } else {
                         let lambda = (y2 - y1) * (x2 - x1).inv();
                         let x3 = lambda * lambda - x1 - x2;
@@ -95,48 +86,38 @@ impl<F: FieldOrder, EC: Curve<F>> Point<F, EC> {
                         Self::Affine { x: x3, y: y3 }
                     }
                 }
-                Self::Infinity(_) => *self,
+                Self::Infinity => *self,
             },
-            Self::Infinity(_) => *other,
+            Self::Infinity => *other,
         }
     }
 
-    pub fn double(&self) -> Self {
+    fn double(&self, a: FieldElement<F>) -> Self {
         match self {
             Self::Affine { x, y } => {
                 if *y == FieldElement::ZERO {
-                    return Self::Infinity(Infinity::new());
+                    return Self::Infinity;
                 }
-                let lambda =
-                    (FieldElement::THREE * (x * x) + EC::A) * (FieldElement::TWO * y).inv();
+                let lambda = (FieldElement::THREE * (x * x) + a) * (FieldElement::TWO * y).inv();
                 let x2 = lambda * lambda - FieldElement::TWO * x;
                 let y2 = lambda * (x - x2) - y;
                 Self::Affine { x: x2, y: y2 }
             }
-            Self::Infinity(_) => *self,
+            Self::Infinity => *self,
         }
     }
 
     pub fn is_infinity(&self) -> bool {
-        matches!(self, Self::Infinity(_))
+        matches!(self, Self::Infinity)
     }
 
-    pub fn mul(&self, scalar: Scalar) -> Self {
-        self.mul_le_bytes(scalar.0)
-    }
-
-    // pub fn mul_fe(&self, scalar: FieldElement<F>) -> Self {
-    // self.mul_le_bytes(scalar.to_bytes_le())
-    // }
-
-    #[inline]
-    fn mul_le_bytes(&self, bytes: [u8; 32]) -> Self {
-        let mut result = Self::Infinity(Infinity::new());
-        for byte in bytes.iter().rev() {
+    fn mul(&self, scalar: Scalar, a: FieldElement<F>) -> Self {
+        let mut result = Self::Infinity;
+        for byte in scalar.0.iter().rev() {
             for bit_idx in (0..u8::BITS).rev() {
-                result = result.double();
+                result = result.double(a);
                 if (byte >> bit_idx) & 1 == 1 {
-                    result = result.add(self);
+                    result = result.add(self, a);
                 }
             }
         }
@@ -170,7 +151,9 @@ mod tests {
     use field::{Secp256k1FieldOrder as Fp, Secp256k1GroupOrder};
 
     type Fe = FieldElement<Fp>;
-    type Pt = Point<Fp, Secp256k1Curve>;
+    type Pt = Point<Fp>;
+
+    const CURVE: Secp256k1Curve = Secp256k1Curve;
 
     fn fe(limbs: [u64; 4]) -> Fe {
         Fe::from_limbs_unchecked(limbs)
@@ -233,58 +216,52 @@ mod tests {
                 x: *x,
                 y: Fe::ZERO - *y,
             },
-            Pt::Infinity(_) => *p,
+            Pt::Infinity => *p,
         }
     }
 
     fn infinity() -> Pt {
-        Pt::Infinity(Infinity::new())
+        Pt::Infinity
     }
 
     #[test]
     fn double_generator_matches_2g() {
-        assert_eq!(generator().double(), two_g());
+        assert_eq!(CURVE.add(generator(), generator()), two_g());
     }
 
     #[test]
     fn add_g_plus_2g_matches_3g() {
-        assert_eq!(generator().add(&two_g()), three_g());
+        assert_eq!(CURVE.add(generator(), two_g()), three_g());
     }
 
     #[test]
     fn add_2g_plus_g_matches_3g() {
-        assert_eq!(two_g().add(&generator()), three_g());
-    }
-
-    #[test]
-    fn add_same_point_reduces_to_double() {
-        let g = generator();
-        assert_eq!(g.add(&g), g.double());
+        assert_eq!(CURVE.add(two_g(), generator()), three_g());
     }
 
     #[test]
     fn add_infinity_right_identity() {
         let g = generator();
-        assert_eq!(g.add(&infinity()), g);
+        assert_eq!(CURVE.add(g, infinity()), g);
     }
 
     #[test]
     fn add_infinity_left_identity() {
         let g = generator();
-        assert_eq!(infinity().add(&g), g);
+        assert_eq!(CURVE.add(infinity(), g), g);
     }
 
     #[test]
     fn add_point_and_negation_is_infinity() {
         let g = generator();
-        assert!(g.add(&neg(&g)).is_infinity());
+        assert!(CURVE.add(g, neg(&g)).is_infinity());
     }
 
     #[test]
     fn add_is_commutative() {
         let a = generator();
         let b = two_g();
-        assert_eq!(a.add(&b), b.add(&a));
+        assert_eq!(CURVE.add(a, b), CURVE.add(b, a));
     }
 
     #[test]
@@ -292,53 +269,56 @@ mod tests {
         let a = generator();
         let b = two_g();
         let c = three_g();
-        assert_eq!(a.add(&b).add(&c), a.add(&b.add(&c)));
-    }
-
-    #[test]
-    fn double_infinity_is_infinity() {
-        assert!(infinity().double().is_infinity());
+        assert_eq!(CURVE.add(CURVE.add(a, b), c), CURVE.add(a, CURVE.add(b, c)));
     }
 
     #[test]
     fn infinity_plus_infinity_is_infinity() {
-        assert!(infinity().add(&infinity()).is_infinity());
+        assert!(CURVE.add(infinity(), infinity()).is_infinity());
     }
 
     #[test]
     fn mul_by_zero_is_infinity() {
-        assert!(generator().mul(Scalar::from_u128(0)).is_infinity());
+        assert!(
+            CURVE
+                .multiply(Scalar::from_u128(0), generator())
+                .is_infinity()
+        );
     }
 
     #[test]
     fn mul_by_one_is_identity() {
         let g = generator();
-        assert_eq!(g.mul(Scalar::from_u128(1)), g);
+        assert_eq!(CURVE.multiply(Scalar::from_u128(1), g), g);
     }
 
     #[test]
     fn mul_by_two_matches_double() {
         let g = generator();
-        assert_eq!(g.mul(Scalar::from_u128(2)), g.double());
+        assert_eq!(CURVE.multiply(Scalar::from_u128(2), g), CURVE.add(g, g));
     }
 
     #[test]
     fn mul_by_three_matches_3g() {
-        assert_eq!(generator().mul(Scalar::from_u128(3)), three_g());
+        assert_eq!(CURVE.multiply(Scalar::from_u128(3), generator()), three_g());
     }
 
     #[test]
     fn mul_scalar_additivity() {
         let g = generator();
-        let a = g.mul(Scalar::from_u128(7));
-        let b = g.mul(Scalar::from_u128(11));
-        let sum = g.mul(Scalar::from_u128(18));
-        assert_eq!(a.add(&b), sum);
+        let a = CURVE.multiply(Scalar::from_u128(7), g);
+        let b = CURVE.multiply(Scalar::from_u128(11), g);
+        let sum = CURVE.multiply(Scalar::from_u128(18), g);
+        assert_eq!(CURVE.add(a, b), sum);
     }
 
     #[test]
     fn mul_infinity_is_infinity() {
-        assert!(infinity().mul(Scalar::from_u128(12345)).is_infinity());
+        assert!(
+            CURVE
+                .multiply(Scalar::from_u128(12345), infinity())
+                .is_infinity()
+        );
     }
 
     #[test]
@@ -349,30 +329,33 @@ mod tests {
     #[test]
     fn struct_generator_mul_by_one_is_itself() {
         assert_eq!(
-            Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(1)),
+            CURVE.multiply(Scalar::from_u128(1), Secp256k1Curve::GENERATOR),
             Secp256k1Curve::GENERATOR
         );
     }
 
     #[test]
     fn struct_generator_mul_by_two_matches_2g() {
-        assert_eq!(Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(2)), two_g());
+        assert_eq!(
+            CURVE.multiply(Scalar::from_u128(2), Secp256k1Curve::GENERATOR),
+            two_g()
+        );
     }
 
     #[test]
     fn struct_generator_mul_by_three_matches_3g() {
         assert_eq!(
-            Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(3)),
+            CURVE.multiply(Scalar::from_u128(3), Secp256k1Curve::GENERATOR),
             three_g()
         );
     }
 
     #[test]
     fn struct_generator_mul_scalar_additivity() {
-        let a = Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(7));
-        let b = Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(11));
-        let sum = Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(18));
-        assert_eq!(a.add(&b), sum);
+        let a = CURVE.multiply(Scalar::from_u128(7), Secp256k1Curve::GENERATOR);
+        let b = CURVE.multiply(Scalar::from_u128(11), Secp256k1Curve::GENERATOR);
+        let sum = CURVE.multiply(Scalar::from_u128(18), Secp256k1Curve::GENERATOR);
+        assert_eq!(CURVE.add(a, b), sum);
     }
 
     #[test]
@@ -382,7 +365,7 @@ mod tests {
             0xAE, 0xBA, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF,
         ]);
-        assert!(Secp256k1Curve::GENERATOR.mul(n).is_infinity());
+        assert!(CURVE.multiply(n, Secp256k1Curve::GENERATOR).is_infinity());
     }
 
     #[test]
@@ -394,18 +377,21 @@ mod tests {
             0xAE, 0xBA, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF,
         ]);
-        assert!(generator().mul(n).is_infinity());
+        assert!(CURVE.multiply(n, generator()).is_infinity());
     }
 
     #[test]
     fn j_invariant() {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         struct E;
         impl Curve<Secp256k1GroupOrder> for E {
-            const A: FieldElement<Secp256k1GroupOrder> = FieldElement::ONE;
-            const B: FieldElement<Secp256k1GroupOrder> = FieldElement::ZERO;
+            fn a(&self) -> FieldElement<Secp256k1GroupOrder> {
+                FieldElement::ONE
+            }
+            fn b(&self) -> FieldElement<Secp256k1GroupOrder> {
+                FieldElement::ZERO
+            }
         }
-        let j_inv = E::j_invariant();
-        assert_eq!(FieldElement::from_u64(1728), j_inv);
+        assert_eq!(FieldElement::from_u64(1728), E.j_invariant());
     }
 }

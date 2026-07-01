@@ -1,4 +1,4 @@
-use curve::{Scalar, Secp256k1Curve};
+use curve::{Curve, Scalar, Secp256k1Curve};
 use field::FieldElement;
 use rand::{RngExt, rng};
 
@@ -30,10 +30,14 @@ fn main() {
     let x = FieldElement::<field::Secp256k1GroupOrder>::from_bytes_unchecked(private_bytes);
     let k = FieldElement::<field::Secp256k1GroupOrder>::from_bytes_unchecked(nonce_bytes);
     let s = k + e * x;
+    let curve = Secp256k1Curve;
     println!("Produced signature (R, s)");
     let time = SystemTime::now();
     let lhs = Secp256k1Curve::point_from_scalar(Scalar::from_bytes(s.to_bytes_le()));
-    let rhs = public_key.mul(Scalar::from_bytes(e.to_bytes_le())).add(&r);
+    let rhs = curve.add(
+        curve.multiply(Scalar::from_bytes(e.to_bytes_le()), public_key),
+        r,
+    );
     assert_eq!(lhs, rhs, "points did not match");
     println!("Schnorr signature verified");
     println!("Took {} milliseconds", time.elapsed().unwrap().as_millis());
