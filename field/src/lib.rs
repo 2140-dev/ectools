@@ -2,14 +2,14 @@ use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
-pub trait PrimeModulus: fmt::Debug + Clone + Copy + PartialEq + Eq {
+pub trait FieldOrder: fmt::Debug + Clone + Copy + PartialEq + Eq {
     const MODULUS: [u64; 4];
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Secp256k1;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
+pub struct Secp256k1FieldOrder;
 
-impl PrimeModulus for Secp256k1 {
+impl FieldOrder for Secp256k1FieldOrder {
     const MODULUS: [u64; 4] = [
         0xFFFFFFFEFFFFFC2F,
         0xFFFFFFFFFFFFFFFF,
@@ -18,13 +18,25 @@ impl PrimeModulus for Secp256k1 {
     ];
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FieldElement<P: PrimeModulus> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
+pub struct Secp256k1GroupOrder;
+
+impl FieldOrder for Secp256k1GroupOrder {
+    const MODULUS: [u64; 4] = [
+        0xBFD25E8CD0364141,
+        0xBAAEDCE6AF48A03B,
+        0xFFFFFFFFFFFFFFFE,
+        0xFFFFFFFFFFFFFFFF,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
+pub struct FieldElement<P: FieldOrder> {
     limbs: [u64; 4],
     _marker: PhantomData<P>,
 }
 
-impl<P: PrimeModulus> FieldElement<P> {
+impl<P: FieldOrder> FieldElement<P> {
     pub const ZERO: Self = Self {
         limbs: [0, 0, 0, 0],
         _marker: PhantomData,
@@ -71,9 +83,16 @@ impl<P: PrimeModulus> FieldElement<P> {
             _marker: PhantomData,
         }
     }
-}
 
-impl<P: PrimeModulus> FieldElement<P> {
+    pub fn to_bytes_le(&self) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&self.limbs[0].to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.limbs[1].to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.limbs[2].to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.limbs[3].to_le_bytes());
+        bytes
+    }
+
     pub fn add(&self, rhs: &Self) -> Self {
         let (s0, c) = self.limbs[0].carrying_add(rhs.limbs[0], false);
         let (s1, c) = self.limbs[1].carrying_add(rhs.limbs[1], c);
@@ -166,7 +185,7 @@ fn wide_mul(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
 }
 
 #[inline]
-fn ge_modulus<P: PrimeModulus>(x: &[u64; 4]) -> bool {
+fn ge_modulus<P: FieldOrder>(x: &[u64; 4]) -> bool {
     for i in (0..4).rev() {
         if x[i] != P::MODULUS[i] {
             return x[i] > P::MODULUS[i];
@@ -176,7 +195,7 @@ fn ge_modulus<P: PrimeModulus>(x: &[u64; 4]) -> bool {
 }
 
 #[inline]
-fn reduce_wide<P: PrimeModulus>(x: [u64; 8]) -> [u64; 4] {
+fn reduce_wide<P: FieldOrder>(x: [u64; 8]) -> [u64; 4] {
     let mut r = [0u64; 4];
     for bit_idx in (0..512).rev() {
         let top = r[3] >> 63;
@@ -196,121 +215,121 @@ fn reduce_wide<P: PrimeModulus>(x: [u64; 8]) -> [u64; 4] {
     r
 }
 
-impl<P: PrimeModulus> Add for FieldElement<P> {
+impl<P: FieldOrder> Add for FieldElement<P> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
         FieldElement::<P>::add(&self, &rhs)
     }
 }
 
-impl<P: PrimeModulus> Add<&FieldElement<P>> for FieldElement<P> {
+impl<P: FieldOrder> Add<&FieldElement<P>> for FieldElement<P> {
     type Output = FieldElement<P>;
     fn add(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::add(&self, rhs)
     }
 }
 
-impl<P: PrimeModulus> Add<FieldElement<P>> for &FieldElement<P> {
+impl<P: FieldOrder> Add<FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn add(self, rhs: FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::add(self, &rhs)
     }
 }
 
-impl<P: PrimeModulus> Add<&FieldElement<P>> for &FieldElement<P> {
+impl<P: FieldOrder> Add<&FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn add(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::add(self, rhs)
     }
 }
 
-impl<P: PrimeModulus> AddAssign for FieldElement<P> {
+impl<P: FieldOrder> AddAssign for FieldElement<P> {
     fn add_assign(&mut self, rhs: Self) {
         *self = FieldElement::<P>::add(self, &rhs);
     }
 }
 
-impl<P: PrimeModulus> AddAssign<&FieldElement<P>> for FieldElement<P> {
+impl<P: FieldOrder> AddAssign<&FieldElement<P>> for FieldElement<P> {
     fn add_assign(&mut self, rhs: &FieldElement<P>) {
         *self = FieldElement::<P>::add(self, rhs);
     }
 }
 
-impl<P: PrimeModulus> Sub for FieldElement<P> {
+impl<P: FieldOrder> Sub for FieldElement<P> {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
         FieldElement::<P>::sub(&self, &rhs)
     }
 }
 
-impl<P: PrimeModulus> Sub<&FieldElement<P>> for FieldElement<P> {
+impl<P: FieldOrder> Sub<&FieldElement<P>> for FieldElement<P> {
     type Output = FieldElement<P>;
     fn sub(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::sub(&self, rhs)
     }
 }
 
-impl<P: PrimeModulus> Sub<FieldElement<P>> for &FieldElement<P> {
+impl<P: FieldOrder> Sub<FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn sub(self, rhs: FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::sub(self, &rhs)
     }
 }
 
-impl<P: PrimeModulus> Sub<&FieldElement<P>> for &FieldElement<P> {
+impl<P: FieldOrder> Sub<&FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn sub(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::sub(self, rhs)
     }
 }
 
-impl<P: PrimeModulus> SubAssign for FieldElement<P> {
+impl<P: FieldOrder> SubAssign for FieldElement<P> {
     fn sub_assign(&mut self, rhs: Self) {
         *self = FieldElement::<P>::sub(self, &rhs);
     }
 }
 
-impl<P: PrimeModulus> SubAssign<&FieldElement<P>> for FieldElement<P> {
+impl<P: FieldOrder> SubAssign<&FieldElement<P>> for FieldElement<P> {
     fn sub_assign(&mut self, rhs: &FieldElement<P>) {
         *self = FieldElement::<P>::sub(self, rhs);
     }
 }
 
-impl<P: PrimeModulus> Mul for FieldElement<P> {
+impl<P: FieldOrder> Mul for FieldElement<P> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
         FieldElement::<P>::mul(&self, &rhs)
     }
 }
 
-impl<P: PrimeModulus> Mul<&FieldElement<P>> for FieldElement<P> {
+impl<P: FieldOrder> Mul<&FieldElement<P>> for FieldElement<P> {
     type Output = FieldElement<P>;
     fn mul(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::mul(&self, rhs)
     }
 }
 
-impl<P: PrimeModulus> Mul<FieldElement<P>> for &FieldElement<P> {
+impl<P: FieldOrder> Mul<FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn mul(self, rhs: FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::mul(self, &rhs)
     }
 }
 
-impl<P: PrimeModulus> Mul<&FieldElement<P>> for &FieldElement<P> {
+impl<P: FieldOrder> Mul<&FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn mul(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::mul(self, rhs)
     }
 }
 
-impl<P: PrimeModulus> MulAssign for FieldElement<P> {
+impl<P: FieldOrder> MulAssign for FieldElement<P> {
     fn mul_assign(&mut self, rhs: Self) {
         *self = FieldElement::<P>::mul(self, &rhs);
     }
 }
 
-impl<P: PrimeModulus> MulAssign<&FieldElement<P>> for FieldElement<P> {
+impl<P: FieldOrder> MulAssign<&FieldElement<P>> for FieldElement<P> {
     fn mul_assign(&mut self, rhs: &FieldElement<P>) {
         *self = FieldElement::<P>::mul(self, rhs);
     }
@@ -320,8 +339,8 @@ impl<P: PrimeModulus> MulAssign<&FieldElement<P>> for FieldElement<P> {
 mod tests {
     use super::*;
 
-    type Fp = FieldElement<Secp256k1>;
-    const P: [u64; 4] = Secp256k1::MODULUS;
+    type Fp = FieldElement<Secp256k1FieldOrder>;
+    const P: [u64; 4] = Secp256k1FieldOrder::MODULUS;
 
     fn p_minus(n: u64) -> [u64; 4] {
         [P[0].wrapping_sub(n), P[1], P[2], P[3]]

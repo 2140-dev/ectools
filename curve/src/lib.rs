@@ -1,18 +1,18 @@
 use core::fmt;
 use core::marker::PhantomData;
-use field::{FieldElement, PrimeModulus};
+use field::{FieldElement, FieldOrder};
 
-pub trait Curve<P: PrimeModulus>: fmt::Debug + Clone + Copy + PartialEq + Eq {
+pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
     /// y^2 = x^3 + Ax + B
-    const A: FieldElement<P>;
-    const B: FieldElement<P>;
+    const A: FieldElement<F>;
+    const B: FieldElement<F>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Secp256k1;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
+pub struct Secp256k1Curve;
 
-impl Secp256k1 {
-    pub const GENERATOR: Point<field::Secp256k1, Self> = Point::Affine {
+impl Secp256k1Curve {
+    pub const GENERATOR: Point<field::Secp256k1FieldOrder, Self> = Point::Affine {
         x: FieldElement::from_limbs_unchecked([
             0x59F2815B16F81798,
             0x029BFCDB2DCE28D9,
@@ -26,20 +26,24 @@ impl Secp256k1 {
             0x483ADA7726A3C465,
         ]),
     };
+
+    pub fn point_from_scalar(scalar: Scalar) -> Point<field::Secp256k1FieldOrder, Self> {
+        Self::GENERATOR.mul(scalar)
+    }
 }
 
-impl Curve<field::Secp256k1> for Secp256k1 {
-    const A: FieldElement<field::Secp256k1> = FieldElement::ZERO;
-    const B: FieldElement<field::Secp256k1> = FieldElement::from_u64(7);
+impl Curve<field::Secp256k1FieldOrder> for Secp256k1Curve {
+    const A: FieldElement<field::Secp256k1FieldOrder> = FieldElement::ZERO;
+    const B: FieldElement<field::Secp256k1FieldOrder> = FieldElement::from_u64(7);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Infinity<P: PrimeModulus, C: Curve<P>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
+pub struct Infinity<F: FieldOrder, C: Curve<F>> {
     _m1: PhantomData<C>,
-    _m2: PhantomData<P>,
+    _m2: PhantomData<F>,
 }
 
-impl<P: PrimeModulus, C: Curve<P>> Infinity<P, C> {
+impl<F: FieldOrder, C: Curve<F>> Infinity<F, C> {
     pub const fn new() -> Self {
         Self {
             _m1: PhantomData,
@@ -48,22 +52,22 @@ impl<P: PrimeModulus, C: Curve<P>> Infinity<P, C> {
     }
 }
 
-impl<P: PrimeModulus, C: Curve<P>> Default for Infinity<P, C> {
+impl<F: FieldOrder, C: Curve<F>> Default for Infinity<F, C> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Point<P: PrimeModulus, EC: Curve<P>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
+pub enum Point<F: FieldOrder, EC: Curve<F>> {
     Affine {
-        x: FieldElement<P>,
-        y: FieldElement<P>,
+        x: FieldElement<F>,
+        y: FieldElement<F>,
     },
-    Infinity(Infinity<P, EC>),
+    Infinity(Infinity<F, EC>),
 }
 
-impl<P: PrimeModulus, EC: Curve<P>> Point<P, EC> {
+impl<F: FieldOrder, EC: Curve<F>> Point<F, EC> {
     pub fn add(&self, other: &Self) -> Self {
         match self {
             Self::Affine { x: x1, y: y1 } => match other {
@@ -107,8 +111,17 @@ impl<P: PrimeModulus, EC: Curve<P>> Point<P, EC> {
     }
 
     pub fn mul(&self, scalar: Scalar) -> Self {
+        self.mul_le_bytes(scalar.0)
+    }
+
+    // pub fn mul_fe(&self, scalar: FieldElement<F>) -> Self {
+    // self.mul_le_bytes(scalar.to_bytes_le())
+    // }
+
+    #[inline]
+    fn mul_le_bytes(&self, bytes: [u8; 32]) -> Self {
         let mut result = Self::Infinity(Infinity::new());
-        for byte in scalar.0.iter().rev() {
+        for byte in bytes.iter().rev() {
             for bit_idx in (0..u8::BITS).rev() {
                 result = result.double();
                 if (byte >> bit_idx) & 1 == 1 {
@@ -143,10 +156,10 @@ impl Scalar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field::Secp256k1 as Fp;
+    use field::Secp256k1FieldOrder as Fp;
 
     type Fe = FieldElement<Fp>;
-    type Pt = Point<Fp, Secp256k1>;
+    type Pt = Point<Fp, Secp256k1Curve>;
 
     fn fe(limbs: [u64; 4]) -> Fe {
         Fe::from_limbs_unchecked(limbs)
@@ -319,29 +332,35 @@ mod tests {
 
     #[test]
     fn struct_generator_matches_local_generator() {
-        assert_eq!(Secp256k1::GENERATOR, generator());
+        assert_eq!(Secp256k1Curve::GENERATOR, generator());
     }
 
     #[test]
     fn struct_generator_mul_by_one_is_itself() {
-        assert_eq!(Secp256k1::GENERATOR.mul(Scalar::from_u128(1)), Secp256k1::GENERATOR);
+        assert_eq!(
+            Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(1)),
+            Secp256k1Curve::GENERATOR
+        );
     }
 
     #[test]
     fn struct_generator_mul_by_two_matches_2g() {
-        assert_eq!(Secp256k1::GENERATOR.mul(Scalar::from_u128(2)), two_g());
+        assert_eq!(Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(2)), two_g());
     }
 
     #[test]
     fn struct_generator_mul_by_three_matches_3g() {
-        assert_eq!(Secp256k1::GENERATOR.mul(Scalar::from_u128(3)), three_g());
+        assert_eq!(
+            Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(3)),
+            three_g()
+        );
     }
 
     #[test]
     fn struct_generator_mul_scalar_additivity() {
-        let a = Secp256k1::GENERATOR.mul(Scalar::from_u128(7));
-        let b = Secp256k1::GENERATOR.mul(Scalar::from_u128(11));
-        let sum = Secp256k1::GENERATOR.mul(Scalar::from_u128(18));
+        let a = Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(7));
+        let b = Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(11));
+        let sum = Secp256k1Curve::GENERATOR.mul(Scalar::from_u128(18));
         assert_eq!(a.add(&b), sum);
     }
 
@@ -352,7 +371,7 @@ mod tests {
             0xAE, 0xBA, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF,
         ]);
-        assert!(Secp256k1::GENERATOR.mul(n).is_infinity());
+        assert!(Secp256k1Curve::GENERATOR.mul(n).is_infinity());
     }
 
     #[test]

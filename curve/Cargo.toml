@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 field = { path = "../field" }
+
+[dev-dependencies]
+rand = "0.10.1"
