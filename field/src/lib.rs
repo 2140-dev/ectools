@@ -68,6 +68,33 @@ impl FieldOrder for Secp256k1GroupOrder {
     ];
 }
 
+/// CSIDH-512 base field: p = 4·(ℓ₁·…·ℓ₇₄) − 1 where ℓᵢ runs over the 74
+/// small primes {3, 5, …, 373, 587} listed in the original CSIDH paper.
+/// p is 511 bits and ≡ 3 (mod 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
+pub struct Csidh512FieldOrder;
+
+impl FieldOrder for Csidh512FieldOrder {
+    type Limbs = [u64; 8];
+    const MODULUS: [u64; 8] = [
+        0x1B81B90533C6C87B,
+        0xC2721BF457ACA835,
+        0x516730CC1F0B4F25,
+        0xA7AAC6C567F35507,
+        0x5AFBFCC69322C9CD,
+        0xB42D083AEDC88C42,
+        0xFC8AB0D15E3E4C4A,
+        0x65B48E8F740F89BF,
+    ];
+}
+
+/// Marker trait for prime fields with p ≡ 3 (mod 4), enabling the fast
+/// square-root x^((p+1)/4).
+pub trait Sqrt3Mod4: FieldOrder {}
+
+impl Sqrt3Mod4 for Secp256k1FieldOrder {}
+impl Sqrt3Mod4 for Csidh512FieldOrder {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
 pub struct FieldElement<P: FieldOrder> {
     limbs: P::Limbs,
@@ -212,6 +239,40 @@ impl<P: FieldOrder> FieldElement<P> {
                 let (ri, nb) = e.borrowing_sub(0, borrow);
                 *e = ri;
                 borrow = nb;
+            }
+        }
+        self.pow(exp)
+    }
+}
+
+impl<P: Sqrt3Mod4> FieldElement<P> {
+    /// Returns a square root of `self` via `self^((p+1)/4)`.
+    ///
+    /// If `self` is a non-residue the return value is not a true square root;
+    /// callers should verify by squaring (`r * r == self`).
+    pub fn sqrt(&self) -> Self {
+        let mut exp = P::MODULUS;
+        {
+            let s = exp.as_mut();
+            let (v0, mut carry) = s[0].overflowing_add(1);
+            s[0] = v0;
+            for e in s.iter_mut().skip(1) {
+                if !carry {
+                    break;
+                }
+                let (v, nc) = e.overflowing_add(1);
+                *e = v;
+                carry = nc;
+            }
+        }
+        {
+            let s = exp.as_mut();
+            let n = s.len();
+            let mut carry = 0u64;
+            for i in (0..n).rev() {
+                let next_carry = s[i] & 0b11;
+                s[i] = (s[i] >> 2) | (carry << 62);
+                carry = next_carry;
             }
         }
         self.pow(exp)
@@ -713,5 +774,85 @@ mod tests {
         }
         let a = Fp::from_bytes_unchecked(bytes);
         assert_eq!(a.limbs, P);
+    }
+
+    #[test]
+    fn sqrt_of_zero_is_zero() {
+        assert_eq!(Fp::ZERO.sqrt(), Fp::ZERO);
+    }
+
+    #[test]
+    fn sqrt_of_one_squares_to_one() {
+        let r = Fp::ONE.sqrt();
+        assert_eq!(r * r, Fp::ONE);
+    }
+
+    #[test]
+    fn sqrt_of_secp256k1_square_roundtrips() {
+        let x = Fp::from_u64(42);
+        let x2 = x * x;
+        let r = x2.sqrt();
+        assert_eq!(r * r, x2);
+    }
+
+    #[test]
+    fn sqrt_of_secp256k1_multilimb_square_roundtrips() {
+        let x = Fp::from_limbs_unchecked([0xDEAD_BEEF_CAFE_F00D, 0xABCD, 0x1234, 0x5678]);
+        let x2 = x * x;
+        let r = x2.sqrt();
+        assert_eq!(r * r, x2);
+    }
+
+    #[test]
+    fn sqrt_of_non_residue_does_not_square_back() {
+        // 3 is a non-residue mod p_{secp256k1}. Sqrt gives some r with r² ≠ 3.
+        // (We rely on this behavior for the QR test in CSIDH point sampling.)
+        let three = Fp::from_u64(3);
+        let r = three.sqrt();
+        assert_ne!(r * r, three);
+    }
+
+    type Fc = FieldElement<Csidh512FieldOrder>;
+
+    #[test]
+    fn csidh_sqrt_of_zero_is_zero() {
+        assert_eq!(Fc::ZERO.sqrt(), Fc::ZERO);
+    }
+
+    #[test]
+    fn csidh_sqrt_of_one_squares_to_one() {
+        let r = Fc::ONE.sqrt();
+        assert_eq!(r * r, Fc::ONE);
+    }
+
+    #[test]
+    fn csidh_sqrt_of_small_square_roundtrips() {
+        let x = Fc::from_u64(1234567);
+        let x2 = x * x;
+        let r = x2.sqrt();
+        assert_eq!(r * r, x2);
+    }
+
+    #[test]
+    fn csidh_sqrt_of_multilimb_square_roundtrips() {
+        let x = Fc::from_limbs_unchecked([
+            0x0123_4567_89AB_CDEF,
+            0xFEDC_BA98_7654_3210,
+            0x1111_2222_3333_4444,
+            0x5555_6666_7777_8888,
+            0x9999_AAAA_BBBB_CCCC,
+            0xDEAD_BEEF_CAFE_F00D,
+            0x0F0F_F0F0_5A5A_A5A5,
+            0x0000_0001_0000_0001,
+        ]);
+        let x2 = x * x;
+        let r = x2.sqrt();
+        assert_eq!(r * r, x2);
+    }
+
+    #[test]
+    fn csidh_modulus_is_congruent_to_3_mod_4() {
+        // Precondition for the sqrt formula: p ≡ 3 (mod 4).
+        assert_eq!(Csidh512FieldOrder::MODULUS[0] & 0b11, 0b11);
     }
 }
