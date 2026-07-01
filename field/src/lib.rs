@@ -1,15 +1,52 @@
 use core::fmt;
+use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
+pub trait Limbs:
+    Copy + fmt::Debug + PartialEq + Eq + Hash + AsRef<[u64]> + AsMut<[u64]>
+{
+    const ZERO: Self;
+    const ONE: Self;
+    const TWO: Self;
+    const THREE: Self;
+    fn from_u64(x: u64) -> Self;
+}
+
+impl<const N: usize> Limbs for [u64; N] {
+    const ZERO: Self = [0u64; N];
+    const ONE: Self = {
+        let mut r = [0u64; N];
+        r[0] = 1;
+        r
+    };
+    const TWO: Self = {
+        let mut r = [0u64; N];
+        r[0] = 2;
+        r
+    };
+    const THREE: Self = {
+        let mut r = [0u64; N];
+        r[0] = 3;
+        r
+    };
+    fn from_u64(x: u64) -> Self {
+        let mut r = [0u64; N];
+        r[0] = x;
+        r
+    }
+}
+
 pub trait FieldOrder: fmt::Debug + Clone + Copy + PartialEq + Eq {
-    const MODULUS: [u64; 4];
+    type Limbs: Limbs;
+    const MODULUS: Self::Limbs;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
 pub struct Secp256k1FieldOrder;
 
 impl FieldOrder for Secp256k1FieldOrder {
+    type Limbs = [u64; 4];
     const MODULUS: [u64; 4] = [
         0xFFFFFFFEFFFFFC2F,
         0xFFFFFFFFFFFFFFFF,
@@ -22,6 +59,7 @@ impl FieldOrder for Secp256k1FieldOrder {
 pub struct Secp256k1GroupOrder;
 
 impl FieldOrder for Secp256k1GroupOrder {
+    type Limbs = [u64; 4];
     const MODULUS: [u64; 4] = [
         0xBFD25E8CD0364141,
         0xBAAEDCE6AF48A03B,
@@ -32,45 +70,155 @@ impl FieldOrder for Secp256k1GroupOrder {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
 pub struct FieldElement<P: FieldOrder> {
-    limbs: [u64; 4],
+    limbs: P::Limbs,
     _marker: PhantomData<P>,
 }
 
 impl<P: FieldOrder> FieldElement<P> {
     pub const ZERO: Self = Self {
-        limbs: [0, 0, 0, 0],
+        limbs: <P::Limbs as Limbs>::ZERO,
         _marker: PhantomData,
     };
 
     pub const ONE: Self = Self {
-        limbs: [1, 0, 0, 0],
+        limbs: <P::Limbs as Limbs>::ONE,
         _marker: PhantomData,
     };
 
     pub const TWO: Self = Self {
-        limbs: [2, 0, 0, 0],
+        limbs: <P::Limbs as Limbs>::TWO,
         _marker: PhantomData,
     };
 
     pub const THREE: Self = Self {
-        limbs: [3, 0, 0, 0],
+        limbs: <P::Limbs as Limbs>::THREE,
         _marker: PhantomData,
     };
 
-    pub const fn from_u64(small: u64) -> Self {
+    pub fn from_u64(x: u64) -> Self {
         Self {
-            limbs: [small, 0, 0, 0],
+            limbs: <P::Limbs as Limbs>::from_u64(x),
             _marker: PhantomData,
         }
     }
 
-    pub const fn from_limbs_unchecked(limbs: [u64; 4]) -> Self {
+    pub const fn from_limbs_unchecked(limbs: P::Limbs) -> Self {
         Self {
             limbs,
             _marker: PhantomData,
         }
     }
 
+    pub fn add(&self, rhs: &Self) -> Self {
+        let a = self.limbs.as_ref();
+        let b = rhs.limbs.as_ref();
+        let m = P::MODULUS;
+        let m_slice = m.as_ref();
+
+        let mut sum = <P::Limbs as Limbs>::ZERO;
+        let mut c = false;
+        for (i, s) in sum.as_mut().iter_mut().enumerate() {
+            let (v, nc) = a[i].carrying_add(b[i], c);
+            *s = v;
+            c = nc;
+        }
+        let carry = c;
+
+        let mut diff = <P::Limbs as Limbs>::ZERO;
+        let mut br = false;
+        {
+            let sum_slice = sum.as_ref();
+            for (i, d) in diff.as_mut().iter_mut().enumerate() {
+                let (v, nb) = sum_slice[i].borrowing_sub(m_slice[i], br);
+                *d = v;
+                br = nb;
+            }
+        }
+        let borrow = br;
+
+        let limbs = if carry || !borrow { diff } else { sum };
+        Self {
+            limbs,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Self {
+        let a = self.limbs.as_ref();
+        let b = rhs.limbs.as_ref();
+        let m = P::MODULUS;
+        let m_slice = m.as_ref();
+
+        let mut diff = <P::Limbs as Limbs>::ZERO;
+        let mut br = false;
+        for (i, d) in diff.as_mut().iter_mut().enumerate() {
+            let (v, nb) = a[i].borrowing_sub(b[i], br);
+            *d = v;
+            br = nb;
+        }
+        let borrow = br;
+
+        let limbs = if borrow {
+            let mut r = <P::Limbs as Limbs>::ZERO;
+            let mut c = false;
+            {
+                let diff_slice = diff.as_ref();
+                for (i, ri) in r.as_mut().iter_mut().enumerate() {
+                    let (v, nc) = diff_slice[i].carrying_add(m_slice[i], c);
+                    *ri = v;
+                    c = nc;
+                }
+            }
+            r
+        } else {
+            diff
+        };
+        Self {
+            limbs,
+            _marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn mul(&self, rhs: &Self) -> Self {
+        let (lo, hi) = wide_mul::<P::Limbs>(&self.limbs, &rhs.limbs);
+        let limbs = reduce_wide::<P>(lo, hi);
+        Self {
+            limbs,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn pow(&self, exp: P::Limbs) -> Self {
+        let mut result = Self::ONE;
+        for &limb in exp.as_ref().iter().rev() {
+            for bit_idx in (0..u64::BITS).rev() {
+                result = result.mul(&result);
+                if (limb >> bit_idx) & 1 == 1 {
+                    result = result.mul(self);
+                }
+            }
+        }
+        result
+    }
+
+    pub fn inv(&self) -> Self {
+        let mut exp = P::MODULUS;
+        {
+            let exp_slice = exp.as_mut();
+            let (r0, mut borrow) = exp_slice[0].borrowing_sub(2, false);
+            exp_slice[0] = r0;
+            for e in exp_slice.iter_mut().skip(1) {
+                let (ri, nb) = e.borrowing_sub(0, borrow);
+                *e = ri;
+                borrow = nb;
+            }
+        }
+        self.pow(exp)
+    }
+}
+
+impl<P: FieldOrder<Limbs = [u64; 4]>> FieldElement<P> {
     pub fn from_bytes_unchecked(bytes: [u8; 32]) -> Self {
         let limbs = [
             u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
@@ -92,124 +240,81 @@ impl<P: FieldOrder> FieldElement<P> {
         bytes[24..32].copy_from_slice(&self.limbs[3].to_le_bytes());
         bytes
     }
+}
 
-    pub fn add(&self, rhs: &Self) -> Self {
-        let (s0, c) = self.limbs[0].carrying_add(rhs.limbs[0], false);
-        let (s1, c) = self.limbs[1].carrying_add(rhs.limbs[1], c);
-        let (s2, c) = self.limbs[2].carrying_add(rhs.limbs[2], c);
-        let (s3, carry) = self.limbs[3].carrying_add(rhs.limbs[3], c);
-
-        let (d0, b) = s0.borrowing_sub(P::MODULUS[0], false);
-        let (d1, b) = s1.borrowing_sub(P::MODULUS[1], b);
-        let (d2, b) = s2.borrowing_sub(P::MODULUS[2], b);
-        let (d3, borrow) = s3.borrowing_sub(P::MODULUS[3], b);
-
-        let limbs = if carry || !borrow {
-            [d0, d1, d2, d3]
-        } else {
-            [s0, s1, s2, s3]
-        };
-        Self {
-            limbs,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn sub(&self, rhs: &Self) -> Self {
-        let (d0, b) = self.limbs[0].borrowing_sub(rhs.limbs[0], false);
-        let (d1, b) = self.limbs[1].borrowing_sub(rhs.limbs[1], b);
-        let (d2, b) = self.limbs[2].borrowing_sub(rhs.limbs[2], b);
-        let (d3, borrow) = self.limbs[3].borrowing_sub(rhs.limbs[3], b);
-
-        let limbs = if borrow {
-            let (r0, c) = d0.carrying_add(P::MODULUS[0], false);
-            let (r1, c) = d1.carrying_add(P::MODULUS[1], c);
-            let (r2, c) = d2.carrying_add(P::MODULUS[2], c);
-            let (r3, _) = d3.carrying_add(P::MODULUS[3], c);
-            [r0, r1, r2, r3]
-        } else {
-            [d0, d1, d2, d3]
-        };
-        Self {
-            limbs,
-            _marker: PhantomData,
-        }
-    }
-
-    #[inline]
-    pub fn mul(&self, rhs: &Self) -> Self {
-        let wide = wide_mul(&self.limbs, &rhs.limbs);
-        let limbs = reduce_wide::<P>(wide);
-        Self {
-            limbs,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn pow(&self, exp: [u64; 4]) -> Self {
-        let mut result = Self::ONE;
-        for limb in exp.into_iter().rev() {
-            for bit_idx in (0..u64::BITS).rev() {
-                result = result.mul(&result);
-                if (limb >> bit_idx) & 1 == 1 {
-                    result = result.mul(self);
+#[inline]
+fn wide_mul<L: Limbs>(a: &L, b: &L) -> (L, L) {
+    let a_slice = a.as_ref();
+    let b_slice = b.as_ref();
+    let n = a_slice.len();
+    let mut lo = L::ZERO;
+    let mut hi = L::ZERO;
+    {
+        let lo_slice = lo.as_mut();
+        let hi_slice = hi.as_mut();
+        for i in 0..n {
+            let mut carry = 0u64;
+            for (j, &bj) in b_slice.iter().enumerate() {
+                let idx = i + j;
+                let cell = if idx < n { lo_slice[idx] } else { hi_slice[idx - n] };
+                let (product, new_carry) = a_slice[i].carrying_mul_add(bj, cell, carry);
+                if idx < n {
+                    lo_slice[idx] = product;
+                } else {
+                    hi_slice[idx - n] = product;
                 }
+                carry = new_carry;
             }
+            hi_slice[i] = carry;
         }
-        result
     }
-
-    pub fn inv(&self) -> Self {
-        self.pow([
-            P::MODULUS[0].wrapping_sub(2),
-            P::MODULUS[1],
-            P::MODULUS[2],
-            P::MODULUS[3],
-        ])
-    }
+    (lo, hi)
 }
 
 #[inline]
-fn wide_mul(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
-    let mut t = [0u64; 8];
-    for i in 0..4 {
-        let mut carry = 0u64;
-        for j in 0..4 {
-            let (lo, hi) = a[i].carrying_mul_add(b[j], t[i + j], carry);
-            t[i + j] = lo;
-            carry = hi;
-        }
-        t[i + 4] = carry;
-    }
-    t
-}
-
-#[inline]
-fn ge_modulus<P: FieldOrder>(x: &[u64; 4]) -> bool {
-    for i in (0..4).rev() {
-        if x[i] != P::MODULUS[i] {
-            return x[i] > P::MODULUS[i];
+fn ge_modulus<P: FieldOrder>(x: &P::Limbs) -> bool {
+    let x_slice = x.as_ref();
+    let m = P::MODULUS;
+    let m_slice = m.as_ref();
+    for i in (0..x_slice.len()).rev() {
+        if x_slice[i] != m_slice[i] {
+            return x_slice[i] > m_slice[i];
         }
     }
     true
 }
 
 #[inline]
-fn reduce_wide<P: FieldOrder>(x: [u64; 8]) -> [u64; 4] {
-    let mut r = [0u64; 4];
-    for bit_idx in (0..512).rev() {
-        let top = r[3] >> 63;
-        r[3] = (r[3] << 1) | (r[2] >> 63);
-        r[2] = (r[2] << 1) | (r[1] >> 63);
-        r[1] = (r[1] << 1) | (r[0] >> 63);
-        r[0] = (r[0] << 1) | ((x[bit_idx / 64] >> (bit_idx % 64)) & 1);
+fn reduce_wide<P: FieldOrder>(lo: P::Limbs, hi: P::Limbs) -> P::Limbs {
+    let lo_slice = lo.as_ref();
+    let hi_slice = hi.as_ref();
+    let n = lo_slice.len();
+    let m = P::MODULUS;
+    let m_slice = m.as_ref();
+
+    let mut r = <P::Limbs as Limbs>::ZERO;
+    let total_bits = 2 * n * 64;
+    for bit_idx in (0..total_bits).rev() {
+        let r_slice = r.as_mut();
+        let top = r_slice[n - 1] >> 63;
+        for i in (1..n).rev() {
+            r_slice[i] = (r_slice[i] << 1) | (r_slice[i - 1] >> 63);
+        }
+        let limb_idx = bit_idx / 64;
+        let src_limb = if limb_idx < n {
+            lo_slice[limb_idx]
+        } else {
+            hi_slice[limb_idx - n]
+        };
+        r_slice[0] = (r_slice[0] << 1) | ((src_limb >> (bit_idx % 64)) & 1);
 
         if top == 1 || ge_modulus::<P>(&r) {
-            let (d0, b) = r[0].borrowing_sub(P::MODULUS[0], false);
-            let (d1, b) = r[1].borrowing_sub(P::MODULUS[1], b);
-            let (d2, b) = r[2].borrowing_sub(P::MODULUS[2], b);
-            let (d3, _) = r[3].borrowing_sub(P::MODULUS[3], b);
-            r = [d0, d1, d2, d3];
+            let mut b = false;
+            for (i, ri) in r.as_mut().iter_mut().enumerate() {
+                let (d, nb) = ri.borrowing_sub(m_slice[i], b);
+                *ri = d;
+                b = nb;
+            }
         }
     }
     r

@@ -28,7 +28,7 @@ pub struct Secp256k1Curve;
 
 impl Secp256k1Curve {
     pub const A: FieldElement<Secp256k1FieldOrder> = FieldElement::ZERO;
-    pub const B: FieldElement<Secp256k1FieldOrder> = FieldElement::from_u64(7);
+    pub const B: FieldElement<Secp256k1FieldOrder> = FieldElement::from_limbs_unchecked([7, 0, 0, 0]);
 
     pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::Affine {
         x: FieldElement::from_limbs_unchecked([
