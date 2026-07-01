@@ -2,11 +2,11 @@ use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
-pub trait PrimeModulus: fmt::Debug + Clone + Copy {
+pub trait PrimeModulus: fmt::Debug + Clone + Copy + PartialEq + Eq {
     const MODULUS: [u64; 4];
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Secp256k1;
 
 impl PrimeModulus for Secp256k1 {
@@ -18,26 +18,41 @@ impl PrimeModulus for Secp256k1 {
     ];
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldElement<P: PrimeModulus> {
     limbs: [u64; 4],
     _marker: PhantomData<P>,
 }
 
 impl<P: PrimeModulus> FieldElement<P> {
+    pub const ZERO: Self = Self {
+        limbs: [0, 0, 0, 0],
+        _marker: PhantomData,
+    };
+
     pub const ONE: Self = Self {
         limbs: [1, 0, 0, 0],
         _marker: PhantomData,
     };
 
-    pub fn from_u64(small: u64) -> Self {
+    pub const TWO: Self = Self {
+        limbs: [2, 0, 0, 0],
+        _marker: PhantomData,
+    };
+
+    pub const THREE: Self = Self {
+        limbs: [3, 0, 0, 0],
+        _marker: PhantomData,
+    };
+
+    pub const fn from_u64(small: u64) -> Self {
         Self {
             limbs: [small, 0, 0, 0],
             _marker: PhantomData,
         }
     }
 
-    pub fn from_limbs_unchecked(limbs: [u64; 4]) -> Self {
+    pub const fn from_limbs_unchecked(limbs: [u64; 4]) -> Self {
         Self {
             limbs,
             _marker: PhantomData,
