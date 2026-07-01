@@ -54,7 +54,12 @@ pub trait MontgomeryCurve<F: Field>: fmt::Debug + Clone + Copy + PartialEq + Eq 
         F: Sqrt3Mod4,
     {
         let rhs = x * (x * x + self.a() * x + FieldElement::one());
-        let y2 = rhs * self.b().inv();
+        let b = self.b();
+        let y2 = if b == FieldElement::one() {
+            rhs
+        } else {
+            rhs * b.inv()
+        };
         let y = y2.sqrt();
         y * y == y2
     }
@@ -260,7 +265,12 @@ pub trait ExtensionMontgomeryCurve<E: ExtensionField>:
         E::Base: Sqrt3Mod4,
     {
         let rhs = x * (x * x + self.a() * x + ExtensionFieldElement::one());
-        let y2 = rhs * self.b().inv();
+        let b = self.b();
+        let y2 = if b == ExtensionFieldElement::one() {
+            rhs
+        } else {
+            rhs * b.inv()
+        };
         let y = y2.sqrt();
         y * y == y2
     }
