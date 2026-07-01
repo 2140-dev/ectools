@@ -1,5 +1,5 @@
 use core::fmt;
-use field::{FieldElement, FieldOrder, Secp256k1FieldOrder};
+use field::{FieldElement, FieldOrder, Limbs, Secp256k1FieldOrder, Secp256k1GroupOrder};
 
 /// y^2 = x^3 + Ax + B
 pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
@@ -10,7 +10,7 @@ pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
         p1.add(&p2, self.a())
     }
 
-    fn multiply(&self, scalar: Scalar, point: Point<F>) -> Point<F> {
+    fn multiply<G: FieldOrder>(&self, scalar: Scalar<G>, point: Point<F>) -> Point<F> {
         point.mul(scalar, self.a())
     }
 
@@ -45,7 +45,7 @@ impl Secp256k1Curve {
         ]),
     };
 
-    pub fn point_from_scalar(scalar: Scalar) -> Point<Secp256k1FieldOrder> {
+    pub fn point_from_scalar(scalar: Scalar<Secp256k1GroupOrder>) -> Point<Secp256k1FieldOrder> {
         Self.multiply(scalar, Self::GENERATOR)
     }
 }
@@ -111,12 +111,12 @@ impl<F: FieldOrder> Point<F> {
         matches!(self, Self::Infinity)
     }
 
-    fn mul(&self, scalar: Scalar, a: FieldElement<F>) -> Self {
+    fn mul<G: FieldOrder>(&self, scalar: Scalar<G>, a: FieldElement<F>) -> Self {
         let mut result = Self::Infinity;
-        for byte in scalar.0.iter().rev() {
-            for bit_idx in (0..u8::BITS).rev() {
+        for &limb in scalar.0.as_ref().iter().rev() {
+            for bit_idx in (0..u64::BITS).rev() {
                 result = result.double(a);
-                if (byte >> bit_idx) & 1 == 1 {
+                if (limb >> bit_idx) & 1 == 1 {
                     result = result.add(self, a);
                 }
             }
@@ -125,23 +125,39 @@ impl<F: FieldOrder> Point<F> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Scalar([u8; 32]);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, std::hash::Hash)]
+pub struct Scalar<F: FieldOrder>(F::Limbs);
 
-impl Scalar {
-    pub const fn from_u128(num: u128) -> Self {
-        let le = num.to_le_bytes();
-        let mut bytes = [0u8; 32];
-        let mut i = 0;
-        while i < 16 {
-            bytes[i] = le[i];
-            i += 1;
-        }
-        Self(bytes)
+impl<F: FieldOrder> Scalar<F> {
+    pub const fn from_limbs(limbs: F::Limbs) -> Self {
+        Self(limbs)
     }
 
-    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+    pub fn from_u64(x: u64) -> Self {
+        Self(<F::Limbs as Limbs>::from_u64(x))
+    }
+
+    pub fn from_u128(n: u128) -> Self {
+        let mut limbs = <F::Limbs as Limbs>::ZERO;
+        {
+            let s = limbs.as_mut();
+            s[0] = n as u64;
+            if s.len() >= 2 {
+                s[1] = (n >> 64) as u64;
+            }
+        }
+        Self(limbs)
+    }
+}
+
+impl<F: FieldOrder<Limbs = [u64; 4]>> Scalar<F> {
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self([
+            u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+            u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+            u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+        ])
     }
 }
 
@@ -152,6 +168,7 @@ mod tests {
 
     type Fe = FieldElement<Fp>;
     type Pt = Point<Fp>;
+    type Sc = Scalar<Secp256k1GroupOrder>;
 
     const CURVE: Secp256k1Curve = Secp256k1Curve;
 
@@ -281,7 +298,7 @@ mod tests {
     fn mul_by_zero_is_infinity() {
         assert!(
             CURVE
-                .multiply(Scalar::from_u128(0), generator())
+                .multiply(Sc::from_u128(0), generator())
                 .is_infinity()
         );
     }
@@ -289,26 +306,26 @@ mod tests {
     #[test]
     fn mul_by_one_is_identity() {
         let g = generator();
-        assert_eq!(CURVE.multiply(Scalar::from_u128(1), g), g);
+        assert_eq!(CURVE.multiply(Sc::from_u128(1), g), g);
     }
 
     #[test]
     fn mul_by_two_matches_double() {
         let g = generator();
-        assert_eq!(CURVE.multiply(Scalar::from_u128(2), g), CURVE.add(g, g));
+        assert_eq!(CURVE.multiply(Sc::from_u128(2), g), CURVE.add(g, g));
     }
 
     #[test]
     fn mul_by_three_matches_3g() {
-        assert_eq!(CURVE.multiply(Scalar::from_u128(3), generator()), three_g());
+        assert_eq!(CURVE.multiply(Sc::from_u128(3), generator()), three_g());
     }
 
     #[test]
     fn mul_scalar_additivity() {
         let g = generator();
-        let a = CURVE.multiply(Scalar::from_u128(7), g);
-        let b = CURVE.multiply(Scalar::from_u128(11), g);
-        let sum = CURVE.multiply(Scalar::from_u128(18), g);
+        let a = CURVE.multiply(Sc::from_u128(7), g);
+        let b = CURVE.multiply(Sc::from_u128(11), g);
+        let sum = CURVE.multiply(Sc::from_u128(18), g);
         assert_eq!(CURVE.add(a, b), sum);
     }
 
@@ -316,7 +333,7 @@ mod tests {
     fn mul_infinity_is_infinity() {
         assert!(
             CURVE
-                .multiply(Scalar::from_u128(12345), infinity())
+                .multiply(Sc::from_u128(12345), infinity())
                 .is_infinity()
         );
     }
@@ -329,7 +346,7 @@ mod tests {
     #[test]
     fn struct_generator_mul_by_one_is_itself() {
         assert_eq!(
-            CURVE.multiply(Scalar::from_u128(1), Secp256k1Curve::GENERATOR),
+            CURVE.multiply(Sc::from_u128(1), Secp256k1Curve::GENERATOR),
             Secp256k1Curve::GENERATOR
         );
     }
@@ -337,7 +354,7 @@ mod tests {
     #[test]
     fn struct_generator_mul_by_two_matches_2g() {
         assert_eq!(
-            CURVE.multiply(Scalar::from_u128(2), Secp256k1Curve::GENERATOR),
+            CURVE.multiply(Sc::from_u128(2), Secp256k1Curve::GENERATOR),
             two_g()
         );
     }
@@ -345,22 +362,22 @@ mod tests {
     #[test]
     fn struct_generator_mul_by_three_matches_3g() {
         assert_eq!(
-            CURVE.multiply(Scalar::from_u128(3), Secp256k1Curve::GENERATOR),
+            CURVE.multiply(Sc::from_u128(3), Secp256k1Curve::GENERATOR),
             three_g()
         );
     }
 
     #[test]
     fn struct_generator_mul_scalar_additivity() {
-        let a = CURVE.multiply(Scalar::from_u128(7), Secp256k1Curve::GENERATOR);
-        let b = CURVE.multiply(Scalar::from_u128(11), Secp256k1Curve::GENERATOR);
-        let sum = CURVE.multiply(Scalar::from_u128(18), Secp256k1Curve::GENERATOR);
+        let a = CURVE.multiply(Sc::from_u128(7), Secp256k1Curve::GENERATOR);
+        let b = CURVE.multiply(Sc::from_u128(11), Secp256k1Curve::GENERATOR);
+        let sum = CURVE.multiply(Sc::from_u128(18), Secp256k1Curve::GENERATOR);
         assert_eq!(CURVE.add(a, b), sum);
     }
 
     #[test]
     fn struct_generator_mul_by_group_order_is_infinity() {
-        let n = Scalar::from_bytes([
+        let n = Sc::from_bytes([
             0x41, 0x41, 0x36, 0xD0, 0x8C, 0x5E, 0xD2, 0xBF, 0x3B, 0xA0, 0x48, 0xAF, 0xE6, 0xDC,
             0xAE, 0xBA, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF,
@@ -372,7 +389,7 @@ mod tests {
     fn mul_by_group_order_is_infinity() {
         // n = 0xFFFFFFFF_FFFFFFFF_FFFFFFFF_FFFFFFFE_BAAEDCE6_AF48A03B_BFD25E8C_D0364141
         // in little-endian byte order:
-        let n = Scalar::from_bytes([
+        let n = Sc::from_bytes([
             0x41, 0x41, 0x36, 0xD0, 0x8C, 0x5E, 0xD2, 0xBF, 0x3B, 0xA0, 0x48, 0xAF, 0xE6, 0xDC,
             0xAE, 0xBA, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF,
