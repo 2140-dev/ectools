@@ -1,7 +1,7 @@
 use core::fmt;
-use field::{FieldElement, FieldOrder, Limbs, Secp256k1FieldOrder, Secp256k1GroupOrder};
+use core::hash::{Hash, Hasher};
+use field::{FieldElement, FieldOrder, Limbs, Secp256k1FieldOrder, Secp256k1GroupOrder, Sqrt3Mod4};
 
-/// y^2 = x^3 + Ax + B
 pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
     fn a(&self) -> FieldElement<F>;
     fn b(&self) -> FieldElement<F>;
@@ -21,6 +21,19 @@ pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
         let discriminant = four_a_cubed + FieldElement::from_u64(27) * b * b;
         FieldElement::from_u64(1728) * four_a_cubed * discriminant.inv()
     }
+
+    fn lift(&self, x: FieldElement<F>) -> Option<Point<F>>
+    where
+        F: Sqrt3Mod4,
+    {
+        let rhs = x * x * x + self.a() * x + self.b();
+        let y = rhs.sqrt();
+        if y * y == rhs {
+            Some(Point::from_affine(x, y))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
@@ -30,20 +43,20 @@ impl Secp256k1Curve {
     pub const A: FieldElement<Secp256k1FieldOrder> = FieldElement::ZERO;
     pub const B: FieldElement<Secp256k1FieldOrder> = FieldElement::from_limbs_unchecked([7, 0, 0, 0]);
 
-    pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::Affine {
-        x: FieldElement::from_limbs_unchecked([
+    pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::from_affine(
+        FieldElement::from_limbs_unchecked([
             0x59F2815B16F81798,
             0x029BFCDB2DCE28D9,
             0x55A06295CE870B07,
             0x79BE667EF9DCBBAC,
         ]),
-        y: FieldElement::from_limbs_unchecked([
+        FieldElement::from_limbs_unchecked([
             0x9C47D08FFB10D4B8,
             0xFD17B448A6855419,
             0x5DA4FBFC0E1108A8,
             0x483ADA7726A3C465,
         ]),
-    };
+    );
 
     pub fn point_from_scalar(scalar: Scalar<Secp256k1GroupOrder>) -> Point<Secp256k1FieldOrder> {
         Self.multiply(scalar, Self::GENERATOR)
@@ -60,8 +73,15 @@ impl Curve<Secp256k1FieldOrder> for Secp256k1Curve {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Point<F: FieldOrder> {
+    x: FieldElement<F>,
+    y: FieldElement<F>,
+    z: FieldElement<F>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
-pub enum Point<F: FieldOrder> {
+pub enum PointRepresentation<F: FieldOrder> {
     Affine {
         x: FieldElement<F>,
         y: FieldElement<F>,
@@ -70,49 +90,109 @@ pub enum Point<F: FieldOrder> {
 }
 
 impl<F: FieldOrder> Point<F> {
-    fn add(&self, other: &Self, a: FieldElement<F>) -> Self {
-        match self {
-            Self::Affine { x: x1, y: y1 } => match other {
-                Self::Affine { x: x2, y: y2 } => {
-                    if x1 == x2 && y1 == y2 {
-                        return self.double(a);
-                    }
-                    if x1 == x2 && y1 + y2 == FieldElement::ZERO {
-                        Self::Infinity
-                    } else {
-                        let lambda = (y2 - y1) * (x2 - x1).inv();
-                        let x3 = lambda * lambda - x1 - x2;
-                        let y3 = lambda * (x1 - x3) - y1;
-                        Self::Affine { x: x3, y: y3 }
-                    }
-                }
-                Self::Infinity => *self,
-            },
-            Self::Infinity => *other,
+    pub const INFINITY: Self = Self {
+        x: FieldElement::ONE,
+        y: FieldElement::ONE,
+        z: FieldElement::ZERO,
+    };
+
+    pub const fn from_affine(x: FieldElement<F>, y: FieldElement<F>) -> Self {
+        Self {
+            x,
+            y,
+            z: FieldElement::ONE,
         }
     }
 
-    fn double(&self, a: FieldElement<F>) -> Self {
-        match self {
-            Self::Affine { x, y } => {
-                if *y == FieldElement::ZERO {
-                    return Self::Infinity;
-                }
-                let lambda = (FieldElement::THREE * (x * x) + a) * (FieldElement::TWO * y).inv();
-                let x2 = lambda * lambda - FieldElement::TWO * x;
-                let y2 = lambda * (x - x2) - y;
-                Self::Affine { x: x2, y: y2 }
-            }
-            Self::Infinity => *self,
+    pub fn representation(&self) -> PointRepresentation<F> {
+        if self.z == FieldElement::ZERO {
+            return PointRepresentation::Infinity;
+        }
+        let z_inv = self.z.inv();
+        let z_inv_sq = z_inv * z_inv;
+        let z_inv_cu = z_inv_sq * z_inv;
+        PointRepresentation::Affine {
+            x: self.x * z_inv_sq,
+            y: self.y * z_inv_cu,
         }
     }
 
     pub fn is_infinity(&self) -> bool {
-        matches!(self, Self::Infinity)
+        self.z == FieldElement::ZERO
+    }
+
+    pub fn neg(&self) -> Self {
+        Self {
+            x: self.x,
+            y: FieldElement::ZERO - self.y,
+            z: self.z,
+        }
+    }
+
+    fn double(&self, a: FieldElement<F>) -> Self {
+        if self.z == FieldElement::ZERO {
+            return *self;
+        }
+        let xx = self.x * self.x;
+        let yy = self.y * self.y;
+        let yyyy = yy * yy;
+        let zz = self.z * self.z;
+        let x_plus_yy = self.x + yy;
+        let s_half = x_plus_yy * x_plus_yy - xx - yyyy;
+        let s = s_half + s_half;
+        let three_xx = xx + xx + xx;
+        let m = three_xx + a * zz * zz;
+        let two_s = s + s;
+        let t = m * m - two_s;
+        let x3 = t;
+        let two_yyyy = yyyy + yyyy;
+        let four_yyyy = two_yyyy + two_yyyy;
+        let eight_yyyy = four_yyyy + four_yyyy;
+        let y3 = m * (s - t) - eight_yyyy;
+        let y_plus_z = self.y + self.z;
+        let z3 = y_plus_z * y_plus_z - yy - zz;
+        Self { x: x3, y: y3, z: z3 }
+    }
+
+    fn add(&self, other: &Self, a: FieldElement<F>) -> Self {
+        if self.z == FieldElement::ZERO {
+            return *other;
+        }
+        if other.z == FieldElement::ZERO {
+            return *self;
+        }
+        let z1z1 = self.z * self.z;
+        let z2z2 = other.z * other.z;
+        let u1 = self.x * z2z2;
+        let u2 = other.x * z1z1;
+        let s1 = self.y * other.z * z2z2;
+        let s2 = other.y * self.z * z1z1;
+        let h = u2 - u1;
+        let r_half = s2 - s1;
+        if h == FieldElement::ZERO {
+            if r_half == FieldElement::ZERO {
+                return self.double(a);
+            } else {
+                return Self::INFINITY;
+            }
+        }
+        let two_h = h + h;
+        let i = two_h * two_h;
+        let j = h * i;
+        let r = r_half + r_half;
+        let v = u1 * i;
+        let two_v = v + v;
+        let x3 = r * r - j - two_v;
+        let s1_j = s1 * j;
+        let two_s1_j = s1_j + s1_j;
+        let y3 = r * (v - x3) - two_s1_j;
+        let z1_plus_z2 = self.z + other.z;
+        let z3 = (z1_plus_z2 * z1_plus_z2 - z1z1 - z2z2) * h;
+        Self { x: x3, y: y3, z: z3 }
     }
 
     fn mul<G: FieldOrder>(&self, scalar: Scalar<G>, a: FieldElement<F>) -> Self {
-        let mut result = Self::Infinity;
+        let mut result = Self::INFINITY;
         for &limb in scalar.0.as_ref().iter().rev() {
             for bit_idx in (0..u64::BITS).rev() {
                 result = result.double(a);
@@ -122,6 +202,29 @@ impl<F: FieldOrder> Point<F> {
             }
         }
         result
+    }
+}
+
+impl<F: FieldOrder> PartialEq for Point<F> {
+    fn eq(&self, other: &Self) -> bool {
+        let z1_zero = self.z == FieldElement::ZERO;
+        let z2_zero = other.z == FieldElement::ZERO;
+        if z1_zero || z2_zero {
+            return z1_zero && z2_zero;
+        }
+        let z1_sq = self.z * self.z;
+        let z2_sq = other.z * other.z;
+        let z1_cu = z1_sq * self.z;
+        let z2_cu = z2_sq * other.z;
+        (self.x * z2_sq == other.x * z1_sq) && (self.y * z2_cu == other.y * z1_cu)
+    }
+}
+
+impl<F: FieldOrder> Eq for Point<F> {}
+
+impl<F: FieldOrder + Hash> Hash for Point<F> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.representation().hash(state);
     }
 }
 
@@ -177,68 +280,58 @@ mod tests {
     }
 
     fn generator() -> Pt {
-        Pt::Affine {
-            x: fe([
+        Pt::from_affine(
+            fe([
                 0x59F2815B16F81798,
                 0x029BFCDB2DCE28D9,
                 0x55A06295CE870B07,
                 0x79BE667EF9DCBBAC,
             ]),
-            y: fe([
+            fe([
                 0x9C47D08FFB10D4B8,
                 0xFD17B448A6855419,
                 0x5DA4FBFC0E1108A8,
                 0x483ADA7726A3C465,
             ]),
-        }
+        )
     }
 
     fn two_g() -> Pt {
-        Pt::Affine {
-            x: fe([
+        Pt::from_affine(
+            fe([
                 0xABAC09B95C709EE5,
                 0x5C778E4B8CEF3CA7,
                 0x3045406E95C07CD8,
                 0xC6047F9441ED7D6D,
             ]),
-            y: fe([
+            fe([
                 0x236431A950CFE52A,
                 0xF7F632653266D0E1,
                 0xA3C58419466CEAEE,
                 0x1AE168FEA63DC339,
             ]),
-        }
+        )
     }
 
     fn three_g() -> Pt {
-        Pt::Affine {
-            x: fe([
+        Pt::from_affine(
+            fe([
                 0x8601F113BCE036F9,
                 0xB531C845836F99B0,
                 0x49344F85F89D5229,
                 0xF9308A019258C310,
             ]),
-            y: fe([
+            fe([
                 0x6CB9FD7584B8E672,
                 0x6500A99934C2231B,
                 0x0FE337E62A37F356,
                 0x388F7B0F632DE814,
             ]),
-        }
-    }
-
-    fn neg(p: &Pt) -> Pt {
-        match p {
-            Pt::Affine { x, y } => Pt::Affine {
-                x: *x,
-                y: Fe::ZERO - *y,
-            },
-            Pt::Infinity => *p,
-        }
+        )
     }
 
     fn infinity() -> Pt {
-        Pt::Infinity
+        Pt::INFINITY
     }
 
     #[test]
@@ -271,7 +364,7 @@ mod tests {
     #[test]
     fn add_point_and_negation_is_infinity() {
         let g = generator();
-        assert!(CURVE.add(g, neg(&g)).is_infinity());
+        assert!(CURVE.add(g, g.neg()).is_infinity());
     }
 
     #[test]
@@ -387,8 +480,6 @@ mod tests {
 
     #[test]
     fn mul_by_group_order_is_infinity() {
-        // n = 0xFFFFFFFF_FFFFFFFF_FFFFFFFF_FFFFFFFE_BAAEDCE6_AF48A03B_BFD25E8C_D0364141
-        // in little-endian byte order:
         let n = Sc::from_bytes([
             0x41, 0x41, 0x36, 0xD0, 0x8C, 0x5E, 0xD2, 0xBF, 0x3B, 0xA0, 0x48, 0xAF, 0xE6, 0xDC,
             0xAE, 0xBA, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -410,5 +501,113 @@ mod tests {
             }
         }
         assert_eq!(FieldElement::from_u64(1728), E.j_invariant());
+    }
+
+    #[test]
+    fn representation_of_infinity_is_infinity_variant() {
+        assert_eq!(Pt::INFINITY.representation(), PointRepresentation::Infinity);
+    }
+
+    #[test]
+    fn representation_of_affine_recovers_coords() {
+        let g = generator();
+        let g_x = fe([
+            0x59F2815B16F81798,
+            0x029BFCDB2DCE28D9,
+            0x55A06295CE870B07,
+            0x79BE667EF9DCBBAC,
+        ]);
+        let g_y = fe([
+            0x9C47D08FFB10D4B8,
+            0xFD17B448A6855419,
+            0x5DA4FBFC0E1108A8,
+            0x483ADA7726A3C465,
+        ]);
+        assert_eq!(
+            g.representation(),
+            PointRepresentation::Affine { x: g_x, y: g_y }
+        );
+    }
+
+    #[test]
+    fn representation_after_arithmetic_normalizes() {
+        let two_g_via_add = CURVE.add(generator(), generator());
+        let g_x = fe([
+            0xABAC09B95C709EE5,
+            0x5C778E4B8CEF3CA7,
+            0x3045406E95C07CD8,
+            0xC6047F9441ED7D6D,
+        ]);
+        let g_y = fe([
+            0x236431A950CFE52A,
+            0xF7F632653266D0E1,
+            0xA3C58419466CEAEE,
+            0x1AE168FEA63DC339,
+        ]);
+        assert_eq!(
+            two_g_via_add.representation(),
+            PointRepresentation::Affine { x: g_x, y: g_y }
+        );
+    }
+
+    #[test]
+    fn lift_recovers_generator() {
+        let g_x = fe([
+            0x59F2815B16F81798,
+            0x029BFCDB2DCE28D9,
+            0x55A06295CE870B07,
+            0x79BE667EF9DCBBAC,
+        ]);
+        let lifted = CURVE.lift(g_x).expect("generator x is on-curve");
+        match lifted.representation() {
+            PointRepresentation::Affine { x, y } => {
+                assert_eq!(x, g_x);
+                let g_y = fe([
+                    0x9C47D08FFB10D4B8,
+                    0xFD17B448A6855419,
+                    0x5DA4FBFC0E1108A8,
+                    0x483ADA7726A3C465,
+                ]);
+                assert!(y == g_y || y == Fe::ZERO - g_y);
+            }
+            PointRepresentation::Infinity => panic!("expected affine"),
+        }
+    }
+
+    #[test]
+    fn lift_none_off_curve() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        struct E;
+        impl Curve<Fp> for E {
+            fn a(&self) -> Fe {
+                Fe::ONE
+            }
+            fn b(&self) -> Fe {
+                Fe::ZERO - Fe::TWO
+            }
+        }
+        assert!(E.lift(Fe::ZERO).is_none());
+    }
+
+    #[test]
+    fn lift_two_torsion() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        struct E;
+        impl Curve<Fp> for E {
+            fn a(&self) -> Fe {
+                Fe::ONE
+            }
+            fn b(&self) -> Fe {
+                Fe::ZERO - Fe::TWO
+            }
+        }
+        let p = E.lift(Fe::ONE).expect("(1, 0) is on E");
+        assert_eq!(
+            p.representation(),
+            PointRepresentation::Affine {
+                x: Fe::ONE,
+                y: Fe::ZERO
+            }
+        );
     }
 }
