@@ -43,5 +43,5 @@ fn main() {
     );
     assert_eq!(lhs, rhs, "points did not match");
     println!("Schnorr signature verified");
-    println!("Took {} milliseconds", time.elapsed().unwrap().as_millis());
+    println!("Took {} microseconds", time.elapsed().unwrap().as_micros());
 }

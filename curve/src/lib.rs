@@ -1,6 +1,9 @@
 use core::fmt;
 use core::hash::{Hash, Hasher};
-use field::{FieldElement, FieldOrder, Limbs, Secp256k1FieldOrder, Secp256k1GroupOrder, Sqrt3Mod4};
+use field::{
+    FieldElement, FieldOrder, Limbs, Secp256k1FieldOrder, Secp256k1GroupOrder, Sqrt3Mod4,
+    mont_mul_ct,
+};
 
 pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
     fn a(&self) -> FieldElement<F>;
@@ -39,23 +42,33 @@ pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
 pub struct Secp256k1Curve;
 
+const fn to_mont_secp(canonical: [u64; 4]) -> [u64; 4] {
+    mont_mul_ct(
+        canonical,
+        Secp256k1FieldOrder::R2,
+        Secp256k1FieldOrder::MODULUS,
+        Secp256k1FieldOrder::PINV,
+    )
+}
+
 impl Secp256k1Curve {
     pub const A: FieldElement<Secp256k1FieldOrder> = FieldElement::ZERO;
-    pub const B: FieldElement<Secp256k1FieldOrder> = FieldElement::from_limbs_unchecked([7, 0, 0, 0]);
+    pub const B: FieldElement<Secp256k1FieldOrder> =
+        FieldElement::from_montgomery_limbs_unchecked(to_mont_secp([7, 0, 0, 0]));
 
     pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::from_affine(
-        FieldElement::from_limbs_unchecked([
+        FieldElement::from_montgomery_limbs_unchecked(to_mont_secp([
             0x59F2815B16F81798,
             0x029BFCDB2DCE28D9,
             0x55A06295CE870B07,
             0x79BE667EF9DCBBAC,
-        ]),
-        FieldElement::from_limbs_unchecked([
+        ])),
+        FieldElement::from_montgomery_limbs_unchecked(to_mont_secp([
             0x9C47D08FFB10D4B8,
             0xFD17B448A6855419,
             0x5DA4FBFC0E1108A8,
             0x483ADA7726A3C465,
-        ]),
+        ])),
     );
 
     pub fn point_from_scalar(scalar: Scalar<Secp256k1GroupOrder>) -> Point<Secp256k1FieldOrder> {
