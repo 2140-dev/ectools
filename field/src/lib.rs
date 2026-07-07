@@ -3,39 +3,14 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
-pub trait Limbs: Copy + fmt::Debug + PartialEq + Eq + Hash + AsRef<[u64]> + AsMut<[u64]> {
-    const ZERO: Self;
-    const ONE: Self;
-    const TWO: Self;
-    const THREE: Self;
-    fn from_u64(x: u64) -> Self;
+pub trait Limbs:
+    Copy + fmt::Debug + PartialEq + Eq + Hash + AsRef<[u64]> + AsMut<[u64]> + Default
+{
 }
 
-impl<const N: usize> Limbs for [u64; N] {
-    const ZERO: Self = [0u64; N];
-    const ONE: Self = {
-        let mut r = [0u64; N];
-        r[0] = 1;
-        r
-    };
-    const TWO: Self = {
-        let mut r = [0u64; N];
-        r[0] = 2;
-        r
-    };
-    const THREE: Self = {
-        let mut r = [0u64; N];
-        r[0] = 3;
-        r
-    };
-    fn from_u64(x: u64) -> Self {
-        let mut r = [0u64; N];
-        r[0] = x;
-        r
-    }
-}
+impl<const N: usize> Limbs for [u64; N] where [u64; N]: Default {}
 
-pub trait FieldOrder: fmt::Debug + Clone + Copy + PartialEq + Eq {
+pub trait Field: fmt::Debug + Clone + Copy + PartialEq + Eq {
     type Limbs: Limbs;
     const MODULUS: Self::Limbs;
 }
@@ -43,7 +18,7 @@ pub trait FieldOrder: fmt::Debug + Clone + Copy + PartialEq + Eq {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
 pub struct Secp256k1FieldOrder;
 
-impl FieldOrder for Secp256k1FieldOrder {
+impl Field for Secp256k1FieldOrder {
     type Limbs = [u64; 4];
     const MODULUS: [u64; 4] = [
         0xFFFFFFFEFFFFFC2F,
@@ -56,7 +31,7 @@ impl FieldOrder for Secp256k1FieldOrder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
 pub struct Secp256k1GroupOrder;
 
-impl FieldOrder for Secp256k1GroupOrder {
+impl Field for Secp256k1GroupOrder {
     type Limbs = [u64; 4];
     const MODULUS: [u64; 4] = [
         0xBFD25E8CD0364141,
@@ -72,7 +47,7 @@ impl FieldOrder for Secp256k1GroupOrder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
 pub struct Csidh512FieldOrder;
 
-impl FieldOrder for Csidh512FieldOrder {
+impl Field for Csidh512FieldOrder {
     type Limbs = [u64; 8];
     const MODULUS: [u64; 8] = [
         0x1B81B90533C6C87B,
@@ -88,41 +63,39 @@ impl FieldOrder for Csidh512FieldOrder {
 
 /// Marker trait for prime fields with p ≡ 3 (mod 4), enabling the fast
 /// square-root x^((p+1)/4).
-pub trait Sqrt3Mod4: FieldOrder {}
+pub trait Sqrt3Mod4: Field {}
 
 impl Sqrt3Mod4 for Secp256k1FieldOrder {}
 impl Sqrt3Mod4 for Csidh512FieldOrder {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
-pub struct FieldElement<P: FieldOrder> {
+pub struct FieldElement<P: Field> {
     limbs: P::Limbs,
     _marker: PhantomData<P>,
 }
 
-impl<P: FieldOrder> FieldElement<P> {
-    pub const ZERO: Self = Self {
-        limbs: <P::Limbs as Limbs>::ZERO,
-        _marker: PhantomData,
-    };
+impl<P: Field> FieldElement<P> {
+    pub fn zero() -> Self {
+        Self::from_u64(0)
+    }
 
-    pub const ONE: Self = Self {
-        limbs: <P::Limbs as Limbs>::ONE,
-        _marker: PhantomData,
-    };
+    pub fn one() -> Self {
+        Self::from_u64(1)
+    }
 
-    pub const TWO: Self = Self {
-        limbs: <P::Limbs as Limbs>::TWO,
-        _marker: PhantomData,
-    };
+    pub fn two() -> Self {
+        Self::from_u64(2)
+    }
 
-    pub const THREE: Self = Self {
-        limbs: <P::Limbs as Limbs>::THREE,
-        _marker: PhantomData,
-    };
+    pub fn three() -> Self {
+        Self::from_u64(3)
+    }
 
     pub fn from_u64(x: u64) -> Self {
+        let mut limbs = P::Limbs::default();
+        limbs.as_mut()[0] = x;
         Self {
-            limbs: <P::Limbs as Limbs>::from_u64(x),
+            limbs,
             _marker: PhantomData,
         }
     }
@@ -140,7 +113,7 @@ impl<P: FieldOrder> FieldElement<P> {
         let m = P::MODULUS;
         let m_slice = m.as_ref();
 
-        let mut sum = <P::Limbs as Limbs>::ZERO;
+        let mut sum = P::Limbs::default();
         let mut c = false;
         for (i, s) in sum.as_mut().iter_mut().enumerate() {
             let (v, nc) = a[i].carrying_add(b[i], c);
@@ -149,7 +122,7 @@ impl<P: FieldOrder> FieldElement<P> {
         }
         let carry = c;
 
-        let mut diff = <P::Limbs as Limbs>::ZERO;
+        let mut diff = P::Limbs::default();
         let mut br = false;
         {
             let sum_slice = sum.as_ref();
@@ -174,7 +147,7 @@ impl<P: FieldOrder> FieldElement<P> {
         let m = P::MODULUS;
         let m_slice = m.as_ref();
 
-        let mut diff = <P::Limbs as Limbs>::ZERO;
+        let mut diff = P::Limbs::default();
         let mut br = false;
         for (i, d) in diff.as_mut().iter_mut().enumerate() {
             let (v, nb) = a[i].borrowing_sub(b[i], br);
@@ -184,7 +157,7 @@ impl<P: FieldOrder> FieldElement<P> {
         let borrow = br;
 
         let limbs = if borrow {
-            let mut r = <P::Limbs as Limbs>::ZERO;
+            let mut r = P::Limbs::default();
             let mut c = false;
             {
                 let diff_slice = diff.as_ref();
@@ -206,7 +179,7 @@ impl<P: FieldOrder> FieldElement<P> {
 
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
-        let (lo, hi) = wide_mul::<P::Limbs>(&self.limbs, &rhs.limbs);
+        let (lo, hi) = wide_mul::<P>(&self.limbs, &rhs.limbs);
         let limbs = reduce_wide::<P>(lo, hi);
         Self {
             limbs,
@@ -215,7 +188,7 @@ impl<P: FieldOrder> FieldElement<P> {
     }
 
     pub fn pow(&self, exp: P::Limbs) -> Self {
-        let mut result = Self::ONE;
+        let mut result = Self::one();
         for &limb in exp.as_ref().iter().rev() {
             for bit_idx in (0..u64::BITS).rev() {
                 result = result.mul(&result);
@@ -277,7 +250,7 @@ impl<P: Sqrt3Mod4> FieldElement<P> {
     }
 }
 
-impl<P: FieldOrder<Limbs = [u64; 4]>> FieldElement<P> {
+impl<P: Field<Limbs = [u64; 4]>> FieldElement<P> {
     pub fn from_bytes_unchecked(bytes: [u8; 32]) -> Self {
         let limbs = [
             u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
@@ -302,12 +275,12 @@ impl<P: FieldOrder<Limbs = [u64; 4]>> FieldElement<P> {
 }
 
 #[inline]
-fn wide_mul<L: Limbs>(a: &L, b: &L) -> (L, L) {
+fn wide_mul<P: Field>(a: &P::Limbs, b: &P::Limbs) -> (P::Limbs, P::Limbs) {
     let a_slice = a.as_ref();
     let b_slice = b.as_ref();
     let n = a_slice.len();
-    let mut lo = L::ZERO;
-    let mut hi = L::ZERO;
+    let mut lo = P::Limbs::default();
+    let mut hi = P::Limbs::default();
     {
         let lo_slice = lo.as_mut();
         let hi_slice = hi.as_mut();
@@ -335,7 +308,7 @@ fn wide_mul<L: Limbs>(a: &L, b: &L) -> (L, L) {
 }
 
 #[inline]
-fn ge_modulus<P: FieldOrder>(x: &P::Limbs) -> bool {
+fn ge_modulus<P: Field>(x: &P::Limbs) -> bool {
     let x_slice = x.as_ref();
     let m = P::MODULUS;
     let m_slice = m.as_ref();
@@ -348,14 +321,14 @@ fn ge_modulus<P: FieldOrder>(x: &P::Limbs) -> bool {
 }
 
 #[inline]
-fn reduce_wide<P: FieldOrder>(lo: P::Limbs, hi: P::Limbs) -> P::Limbs {
+fn reduce_wide<P: Field>(lo: P::Limbs, hi: P::Limbs) -> P::Limbs {
     let lo_slice = lo.as_ref();
     let hi_slice = hi.as_ref();
     let n = lo_slice.len();
     let m = P::MODULUS;
     let m_slice = m.as_ref();
 
-    let mut r = <P::Limbs as Limbs>::ZERO;
+    let mut r = P::Limbs::default();
     let total_bits = 2 * n * 64;
     for bit_idx in (0..total_bits).rev() {
         let r_slice = r.as_mut();
@@ -383,121 +356,121 @@ fn reduce_wide<P: FieldOrder>(lo: P::Limbs, hi: P::Limbs) -> P::Limbs {
     r
 }
 
-impl<P: FieldOrder> Add for FieldElement<P> {
+impl<P: Field> Add for FieldElement<P> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
         FieldElement::<P>::add(&self, &rhs)
     }
 }
 
-impl<P: FieldOrder> Add<&FieldElement<P>> for FieldElement<P> {
+impl<P: Field> Add<&FieldElement<P>> for FieldElement<P> {
     type Output = FieldElement<P>;
     fn add(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::add(&self, rhs)
     }
 }
 
-impl<P: FieldOrder> Add<FieldElement<P>> for &FieldElement<P> {
+impl<P: Field> Add<FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn add(self, rhs: FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::add(self, &rhs)
     }
 }
 
-impl<P: FieldOrder> Add<&FieldElement<P>> for &FieldElement<P> {
+impl<P: Field> Add<&FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn add(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::add(self, rhs)
     }
 }
 
-impl<P: FieldOrder> AddAssign for FieldElement<P> {
+impl<P: Field> AddAssign for FieldElement<P> {
     fn add_assign(&mut self, rhs: Self) {
         *self = FieldElement::<P>::add(self, &rhs);
     }
 }
 
-impl<P: FieldOrder> AddAssign<&FieldElement<P>> for FieldElement<P> {
+impl<P: Field> AddAssign<&FieldElement<P>> for FieldElement<P> {
     fn add_assign(&mut self, rhs: &FieldElement<P>) {
         *self = FieldElement::<P>::add(self, rhs);
     }
 }
 
-impl<P: FieldOrder> Sub for FieldElement<P> {
+impl<P: Field> Sub for FieldElement<P> {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
         FieldElement::<P>::sub(&self, &rhs)
     }
 }
 
-impl<P: FieldOrder> Sub<&FieldElement<P>> for FieldElement<P> {
+impl<P: Field> Sub<&FieldElement<P>> for FieldElement<P> {
     type Output = FieldElement<P>;
     fn sub(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::sub(&self, rhs)
     }
 }
 
-impl<P: FieldOrder> Sub<FieldElement<P>> for &FieldElement<P> {
+impl<P: Field> Sub<FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn sub(self, rhs: FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::sub(self, &rhs)
     }
 }
 
-impl<P: FieldOrder> Sub<&FieldElement<P>> for &FieldElement<P> {
+impl<P: Field> Sub<&FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn sub(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::sub(self, rhs)
     }
 }
 
-impl<P: FieldOrder> SubAssign for FieldElement<P> {
+impl<P: Field> SubAssign for FieldElement<P> {
     fn sub_assign(&mut self, rhs: Self) {
         *self = FieldElement::<P>::sub(self, &rhs);
     }
 }
 
-impl<P: FieldOrder> SubAssign<&FieldElement<P>> for FieldElement<P> {
+impl<P: Field> SubAssign<&FieldElement<P>> for FieldElement<P> {
     fn sub_assign(&mut self, rhs: &FieldElement<P>) {
         *self = FieldElement::<P>::sub(self, rhs);
     }
 }
 
-impl<P: FieldOrder> Mul for FieldElement<P> {
+impl<P: Field> Mul for FieldElement<P> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
         FieldElement::<P>::mul(&self, &rhs)
     }
 }
 
-impl<P: FieldOrder> Mul<&FieldElement<P>> for FieldElement<P> {
+impl<P: Field> Mul<&FieldElement<P>> for FieldElement<P> {
     type Output = FieldElement<P>;
     fn mul(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::mul(&self, rhs)
     }
 }
 
-impl<P: FieldOrder> Mul<FieldElement<P>> for &FieldElement<P> {
+impl<P: Field> Mul<FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn mul(self, rhs: FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::mul(self, &rhs)
     }
 }
 
-impl<P: FieldOrder> Mul<&FieldElement<P>> for &FieldElement<P> {
+impl<P: Field> Mul<&FieldElement<P>> for &FieldElement<P> {
     type Output = FieldElement<P>;
     fn mul(self, rhs: &FieldElement<P>) -> FieldElement<P> {
         FieldElement::<P>::mul(self, rhs)
     }
 }
 
-impl<P: FieldOrder> MulAssign for FieldElement<P> {
+impl<P: Field> MulAssign for FieldElement<P> {
     fn mul_assign(&mut self, rhs: Self) {
         *self = FieldElement::<P>::mul(self, &rhs);
     }
 }
 
-impl<P: FieldOrder> MulAssign<&FieldElement<P>> for FieldElement<P> {
+impl<P: Field> MulAssign<&FieldElement<P>> for FieldElement<P> {
     fn mul_assign(&mut self, rhs: &FieldElement<P>) {
         *self = FieldElement::<P>::mul(self, rhs);
     }
@@ -733,7 +706,7 @@ mod tests {
 
     #[test]
     fn inv_of_one_is_one() {
-        assert_eq!(Fp::ONE.inv().limbs, [1, 0, 0, 0]);
+        assert_eq!(Fp::one().inv().limbs, [1, 0, 0, 0]);
     }
 
     #[test]
@@ -780,13 +753,13 @@ mod tests {
 
     #[test]
     fn sqrt_of_zero_is_zero() {
-        assert_eq!(Fp::ZERO.sqrt(), Fp::ZERO);
+        assert_eq!(Fp::zero().sqrt(), Fp::zero());
     }
 
     #[test]
     fn sqrt_of_one_squares_to_one() {
-        let r = Fp::ONE.sqrt();
-        assert_eq!(r * r, Fp::ONE);
+        let r = Fp::one().sqrt();
+        assert_eq!(r * r, Fp::one());
     }
 
     #[test]
@@ -818,13 +791,13 @@ mod tests {
 
     #[test]
     fn csidh_sqrt_of_zero_is_zero() {
-        assert_eq!(Fc::ZERO.sqrt(), Fc::ZERO);
+        assert_eq!(Fc::zero().sqrt(), Fc::zero());
     }
 
     #[test]
     fn csidh_sqrt_of_one_squares_to_one() {
-        let r = Fc::ONE.sqrt();
-        assert_eq!(r * r, Fc::ONE);
+        let r = Fc::one().sqrt();
+        assert_eq!(r * r, Fc::one());
     }
 
     #[test]
