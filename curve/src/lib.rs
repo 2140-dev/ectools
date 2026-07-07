@@ -1,8 +1,8 @@
 use core::fmt;
 use core::hash::{Hash, Hasher};
-use field::{FieldElement, FieldOrder, Limbs, Secp256k1FieldOrder, Secp256k1GroupOrder, Sqrt3Mod4};
+use field::{Field, FieldElement, Secp256k1FieldOrder, Secp256k1GroupOrder, Sqrt3Mod4};
 
-pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
+pub trait Curve<F: Field>: fmt::Debug + Clone + Copy + PartialEq + Eq {
     fn a(&self) -> FieldElement<F>;
     fn b(&self) -> FieldElement<F>;
 
@@ -10,7 +10,7 @@ pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
         p1.add(&p2, self.a())
     }
 
-    fn multiply<G: FieldOrder>(&self, scalar: Scalar<G>, point: Point<F>) -> Point<F> {
+    fn multiply<G: Field>(&self, scalar: Scalar<G>, point: Point<F>) -> Point<F> {
         point.mul(scalar, self.a())
     }
 
@@ -40,11 +40,12 @@ pub trait Curve<F: FieldOrder>: fmt::Debug + Clone + Copy + PartialEq + Eq {
 pub struct Secp256k1Curve;
 
 impl Secp256k1Curve {
-    pub const A: FieldElement<Secp256k1FieldOrder> = FieldElement::ZERO;
+    pub const A: FieldElement<Secp256k1FieldOrder> =
+        FieldElement::from_limbs_unchecked([0, 0, 0, 0]);
     pub const B: FieldElement<Secp256k1FieldOrder> =
         FieldElement::from_limbs_unchecked([7, 0, 0, 0]);
 
-    pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::from_affine(
+    pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::from_jacobian_unchecked(
         FieldElement::from_limbs_unchecked([
             0x59F2815B16F81798,
             0x029BFCDB2DCE28D9,
@@ -57,6 +58,7 @@ impl Secp256k1Curve {
             0x5DA4FBFC0E1108A8,
             0x483ADA7726A3C465,
         ]),
+        FieldElement::from_limbs_unchecked([1, 0, 0, 0]),
     );
 
     pub fn point_from_scalar(scalar: Scalar<Secp256k1GroupOrder>) -> Point<Secp256k1FieldOrder> {
@@ -75,14 +77,14 @@ impl Curve<Secp256k1FieldOrder> for Secp256k1Curve {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Point<F: FieldOrder> {
+pub struct Point<F: Field> {
     x: FieldElement<F>,
     y: FieldElement<F>,
     z: FieldElement<F>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
-pub enum PointRepresentation<F: FieldOrder> {
+pub enum PointRepresentation<F: Field> {
     Affine {
         x: FieldElement<F>,
         y: FieldElement<F>,
@@ -90,23 +92,29 @@ pub enum PointRepresentation<F: FieldOrder> {
     Infinity,
 }
 
-impl<F: FieldOrder> Point<F> {
-    pub const INFINITY: Self = Self {
-        x: FieldElement::ONE,
-        y: FieldElement::ONE,
-        z: FieldElement::ZERO,
-    };
-
-    pub const fn from_affine(x: FieldElement<F>, y: FieldElement<F>) -> Self {
+impl<F: Field> Point<F> {
+    pub fn infinity() -> Self {
         Self {
-            x,
-            y,
-            z: FieldElement::ONE,
+            x: FieldElement::one(),
+            y: FieldElement::one(),
+            z: FieldElement::zero(),
         }
     }
 
+    pub const fn from_jacobian_unchecked(
+        x: FieldElement<F>,
+        y: FieldElement<F>,
+        z: FieldElement<F>,
+    ) -> Self {
+        Self { x, y, z }
+    }
+
+    pub fn from_affine(x: FieldElement<F>, y: FieldElement<F>) -> Self {
+        Self::from_jacobian_unchecked(x, y, FieldElement::one())
+    }
+
     pub fn representation(&self) -> PointRepresentation<F> {
-        if self.z == FieldElement::ZERO {
+        if self.z == FieldElement::zero() {
             return PointRepresentation::Infinity;
         }
         let z_inv = self.z.inv();
@@ -119,19 +127,19 @@ impl<F: FieldOrder> Point<F> {
     }
 
     pub fn is_infinity(&self) -> bool {
-        self.z == FieldElement::ZERO
+        self.z == FieldElement::zero()
     }
 
     pub fn neg(&self) -> Self {
         Self {
             x: self.x,
-            y: FieldElement::ZERO - self.y,
+            y: FieldElement::zero() - self.y,
             z: self.z,
         }
     }
 
     fn double(&self, a: FieldElement<F>) -> Self {
-        if self.z == FieldElement::ZERO {
+        if self.z == FieldElement::zero() {
             return *self;
         }
         let xx = self.x * self.x;
@@ -160,10 +168,10 @@ impl<F: FieldOrder> Point<F> {
     }
 
     fn add(&self, other: &Self, a: FieldElement<F>) -> Self {
-        if self.z == FieldElement::ZERO {
+        if self.z == FieldElement::zero() {
             return *other;
         }
-        if other.z == FieldElement::ZERO {
+        if other.z == FieldElement::zero() {
             return *self;
         }
         let z1z1 = self.z * self.z;
@@ -174,11 +182,11 @@ impl<F: FieldOrder> Point<F> {
         let s2 = other.y * self.z * z1z1;
         let h = u2 - u1;
         let r_half = s2 - s1;
-        if h == FieldElement::ZERO {
-            if r_half == FieldElement::ZERO {
+        if h == FieldElement::zero() {
+            if r_half == FieldElement::zero() {
                 return self.double(a);
             } else {
-                return Self::INFINITY;
+                return Self::infinity();
             }
         }
         let two_h = h + h;
@@ -200,8 +208,8 @@ impl<F: FieldOrder> Point<F> {
         }
     }
 
-    fn mul<G: FieldOrder>(&self, scalar: Scalar<G>, a: FieldElement<F>) -> Self {
-        let mut result = Self::INFINITY;
+    fn mul<G: Field>(&self, scalar: Scalar<G>, a: FieldElement<F>) -> Self {
+        let mut result = Self::infinity();
         for &limb in scalar.0.as_ref().iter().rev() {
             for bit_idx in (0..u64::BITS).rev() {
                 result = result.double(a);
@@ -214,10 +222,10 @@ impl<F: FieldOrder> Point<F> {
     }
 }
 
-impl<F: FieldOrder> PartialEq for Point<F> {
+impl<F: Field> PartialEq for Point<F> {
     fn eq(&self, other: &Self) -> bool {
-        let z1_zero = self.z == FieldElement::ZERO;
-        let z2_zero = other.z == FieldElement::ZERO;
+        let z1_zero = self.z == FieldElement::zero();
+        let z2_zero = other.z == FieldElement::zero();
         if z1_zero || z2_zero {
             return z1_zero && z2_zero;
         }
@@ -229,28 +237,30 @@ impl<F: FieldOrder> PartialEq for Point<F> {
     }
 }
 
-impl<F: FieldOrder> Eq for Point<F> {}
+impl<F: Field> Eq for Point<F> {}
 
-impl<F: FieldOrder + Hash> Hash for Point<F> {
+impl<F: Field + Hash> Hash for Point<F> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.representation().hash(state);
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, std::hash::Hash)]
-pub struct Scalar<F: FieldOrder>(F::Limbs);
+pub struct Scalar<F: Field>(F::Limbs);
 
-impl<F: FieldOrder> Scalar<F> {
+impl<F: Field> Scalar<F> {
     pub const fn from_limbs(limbs: F::Limbs) -> Self {
         Self(limbs)
     }
 
     pub fn from_u64(x: u64) -> Self {
-        Self(<F::Limbs as Limbs>::from_u64(x))
+        let mut limbs = F::Limbs::default();
+        limbs.as_mut()[0] = x;
+        Self(limbs)
     }
 
     pub fn from_u128(n: u128) -> Self {
-        let mut limbs = <F::Limbs as Limbs>::ZERO;
+        let mut limbs = F::Limbs::default();
         {
             let s = limbs.as_mut();
             s[0] = n as u64;
@@ -262,7 +272,7 @@ impl<F: FieldOrder> Scalar<F> {
     }
 }
 
-impl<F: FieldOrder<Limbs = [u64; 4]>> Scalar<F> {
+impl<F: Field<Limbs = [u64; 4]>> Scalar<F> {
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self([
             u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
@@ -340,7 +350,7 @@ mod tests {
     }
 
     fn infinity() -> Pt {
-        Pt::INFINITY
+        Pt::infinity()
     }
 
     #[test]
@@ -499,10 +509,10 @@ mod tests {
         struct E;
         impl Curve<Secp256k1GroupOrder> for E {
             fn a(&self) -> FieldElement<Secp256k1GroupOrder> {
-                FieldElement::ONE
+                FieldElement::one()
             }
             fn b(&self) -> FieldElement<Secp256k1GroupOrder> {
-                FieldElement::ZERO
+                FieldElement::zero()
             }
         }
         assert_eq!(FieldElement::from_u64(1728), E.j_invariant());
@@ -510,7 +520,10 @@ mod tests {
 
     #[test]
     fn representation_of_infinity_is_infinity_variant() {
-        assert_eq!(Pt::INFINITY.representation(), PointRepresentation::Infinity);
+        assert_eq!(
+            Pt::infinity().representation(),
+            PointRepresentation::Infinity
+        );
     }
 
     #[test]
@@ -573,7 +586,7 @@ mod tests {
                     0x5DA4FBFC0E1108A8,
                     0x483ADA7726A3C465,
                 ]);
-                assert!(y == g_y || y == Fe::ZERO - g_y);
+                assert!(y == g_y || y == Fe::zero() - g_y);
             }
             PointRepresentation::Infinity => panic!("expected affine"),
         }
@@ -585,13 +598,13 @@ mod tests {
         struct E;
         impl Curve<Fp> for E {
             fn a(&self) -> Fe {
-                Fe::ONE
+                Fe::one()
             }
             fn b(&self) -> Fe {
-                Fe::ZERO - Fe::TWO
+                Fe::zero() - Fe::two()
             }
         }
-        assert!(E.lift(Fe::ZERO).is_none());
+        assert!(E.lift(Fe::zero()).is_none());
     }
 
     #[test]
@@ -600,18 +613,18 @@ mod tests {
         struct E;
         impl Curve<Fp> for E {
             fn a(&self) -> Fe {
-                Fe::ONE
+                Fe::one()
             }
             fn b(&self) -> Fe {
-                Fe::ZERO - Fe::TWO
+                Fe::zero() - Fe::two()
             }
         }
-        let p = E.lift(Fe::ONE).expect("(1, 0) is on E");
+        let p = E.lift(Fe::one()).expect("(1, 0) is on E");
         assert_eq!(
             p.representation(),
             PointRepresentation::Affine {
-                x: Fe::ONE,
-                y: Fe::ZERO
+                x: Fe::one(),
+                y: Fe::zero()
             }
         );
     }
