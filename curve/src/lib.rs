@@ -40,39 +40,43 @@ pub trait Curve<F: Field>: fmt::Debug + Clone + Copy + PartialEq + Eq {
 pub struct Secp256k1Curve;
 
 impl Secp256k1Curve {
-    pub const A: FieldElement<Secp256k1FieldOrder> =
-        FieldElement::from_limbs_unchecked([0, 0, 0, 0]);
-    pub const B: FieldElement<Secp256k1FieldOrder> =
-        FieldElement::from_limbs_unchecked([7, 0, 0, 0]);
+    pub fn a() -> FieldElement<Secp256k1FieldOrder> {
+        FieldElement::from_limbs_unchecked([0, 0, 0, 0])
+    }
 
-    pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::from_jacobian_unchecked(
-        FieldElement::from_limbs_unchecked([
-            0x59F2815B16F81798,
-            0x029BFCDB2DCE28D9,
-            0x55A06295CE870B07,
-            0x79BE667EF9DCBBAC,
-        ]),
-        FieldElement::from_limbs_unchecked([
-            0x9C47D08FFB10D4B8,
-            0xFD17B448A6855419,
-            0x5DA4FBFC0E1108A8,
-            0x483ADA7726A3C465,
-        ]),
-        FieldElement::from_limbs_unchecked([1, 0, 0, 0]),
-    );
+    pub fn b() -> FieldElement<Secp256k1FieldOrder> {
+        FieldElement::from_limbs_unchecked([7, 0, 0, 0])
+    }
+
+    pub fn generator() -> Point<Secp256k1FieldOrder> {
+        Point::from_affine(
+            FieldElement::from_limbs_unchecked([
+                0x59F2815B16F81798,
+                0x029BFCDB2DCE28D9,
+                0x55A06295CE870B07,
+                0x79BE667EF9DCBBAC,
+            ]),
+            FieldElement::from_limbs_unchecked([
+                0x9C47D08FFB10D4B8,
+                0xFD17B448A6855419,
+                0x5DA4FBFC0E1108A8,
+                0x483ADA7726A3C465,
+            ]),
+        )
+    }
 
     pub fn point_from_scalar(scalar: Scalar<Secp256k1GroupOrder>) -> Point<Secp256k1FieldOrder> {
-        Self.multiply(scalar, Self::GENERATOR)
+        Self.multiply(scalar, Self::generator())
     }
 }
 
 impl Curve<Secp256k1FieldOrder> for Secp256k1Curve {
     fn a(&self) -> FieldElement<Secp256k1FieldOrder> {
-        Self::A
+        Self::a()
     }
 
     fn b(&self) -> FieldElement<Secp256k1FieldOrder> {
-        Self::B
+        Self::b()
     }
 }
 
@@ -448,21 +452,21 @@ mod tests {
 
     #[test]
     fn struct_generator_matches_local_generator() {
-        assert_eq!(Secp256k1Curve::GENERATOR, generator());
+        assert_eq!(Secp256k1Curve::generator(), generator());
     }
 
     #[test]
     fn struct_generator_mul_by_one_is_itself() {
         assert_eq!(
-            CURVE.multiply(Sc::from_u128(1), Secp256k1Curve::GENERATOR),
-            Secp256k1Curve::GENERATOR
+            CURVE.multiply(Sc::from_u128(1), Secp256k1Curve::generator()),
+            Secp256k1Curve::generator()
         );
     }
 
     #[test]
     fn struct_generator_mul_by_two_matches_2g() {
         assert_eq!(
-            CURVE.multiply(Sc::from_u128(2), Secp256k1Curve::GENERATOR),
+            CURVE.multiply(Sc::from_u128(2), Secp256k1Curve::generator()),
             two_g()
         );
     }
@@ -470,16 +474,16 @@ mod tests {
     #[test]
     fn struct_generator_mul_by_three_matches_3g() {
         assert_eq!(
-            CURVE.multiply(Sc::from_u128(3), Secp256k1Curve::GENERATOR),
+            CURVE.multiply(Sc::from_u128(3), Secp256k1Curve::generator()),
             three_g()
         );
     }
 
     #[test]
     fn struct_generator_mul_scalar_additivity() {
-        let a = CURVE.multiply(Sc::from_u128(7), Secp256k1Curve::GENERATOR);
-        let b = CURVE.multiply(Sc::from_u128(11), Secp256k1Curve::GENERATOR);
-        let sum = CURVE.multiply(Sc::from_u128(18), Secp256k1Curve::GENERATOR);
+        let a = CURVE.multiply(Sc::from_u128(7), Secp256k1Curve::generator());
+        let b = CURVE.multiply(Sc::from_u128(11), Secp256k1Curve::generator());
+        let sum = CURVE.multiply(Sc::from_u128(18), Secp256k1Curve::generator());
         assert_eq!(CURVE.add(a, b), sum);
     }
 
@@ -490,7 +494,7 @@ mod tests {
             0xAE, 0xBA, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF,
         ]);
-        assert!(CURVE.multiply(n, Secp256k1Curve::GENERATOR).is_infinity());
+        assert!(CURVE.multiply(n, Secp256k1Curve::generator()).is_infinity());
     }
 
     #[test]
