@@ -41,7 +41,8 @@ pub struct Secp256k1Curve;
 
 impl Secp256k1Curve {
     pub const A: FieldElement<Secp256k1FieldOrder> = FieldElement::ZERO;
-    pub const B: FieldElement<Secp256k1FieldOrder> = FieldElement::from_limbs_unchecked([7, 0, 0, 0]);
+    pub const B: FieldElement<Secp256k1FieldOrder> =
+        FieldElement::from_limbs_unchecked([7, 0, 0, 0]);
 
     pub const GENERATOR: Point<Secp256k1FieldOrder> = Point::from_affine(
         FieldElement::from_limbs_unchecked([
@@ -151,7 +152,11 @@ impl<F: FieldOrder> Point<F> {
         let y3 = m * (s - t) - eight_yyyy;
         let y_plus_z = self.y + self.z;
         let z3 = y_plus_z * y_plus_z - yy - zz;
-        Self { x: x3, y: y3, z: z3 }
+        Self {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
     }
 
     fn add(&self, other: &Self, a: FieldElement<F>) -> Self {
@@ -188,7 +193,11 @@ impl<F: FieldOrder> Point<F> {
         let y3 = r * (v - x3) - two_s1_j;
         let z1_plus_z2 = self.z + other.z;
         let z3 = (z1_plus_z2 * z1_plus_z2 - z1z1 - z2z2) * h;
-        Self { x: x3, y: y3, z: z3 }
+        Self {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
     }
 
     fn mul<G: FieldOrder>(&self, scalar: Scalar<G>, a: FieldElement<F>) -> Self {
@@ -389,11 +398,7 @@ mod tests {
 
     #[test]
     fn mul_by_zero_is_infinity() {
-        assert!(
-            CURVE
-                .multiply(Sc::from_u128(0), generator())
-                .is_infinity()
-        );
+        assert!(CURVE.multiply(Sc::from_u128(0), generator()).is_infinity());
     }
 
     #[test]

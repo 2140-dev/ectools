@@ -3,9 +3,7 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
-pub trait Limbs:
-    Copy + fmt::Debug + PartialEq + Eq + Hash + AsRef<[u64]> + AsMut<[u64]>
-{
+pub trait Limbs: Copy + fmt::Debug + PartialEq + Eq + Hash + AsRef<[u64]> + AsMut<[u64]> {
     const ZERO: Self;
     const ONE: Self;
     const TWO: Self;
@@ -317,7 +315,11 @@ fn wide_mul<L: Limbs>(a: &L, b: &L) -> (L, L) {
             let mut carry = 0u64;
             for (j, &bj) in b_slice.iter().enumerate() {
                 let idx = i + j;
-                let cell = if idx < n { lo_slice[idx] } else { hi_slice[idx - n] };
+                let cell = if idx < n {
+                    lo_slice[idx]
+                } else {
+                    hi_slice[idx - n]
+                };
                 let (product, new_carry) = a_slice[i].carrying_mul_add(bj, cell, carry);
                 if idx < n {
                     lo_slice[idx] = product;
