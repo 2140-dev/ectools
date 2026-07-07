@@ -10,9 +10,15 @@ pub trait Limbs:
 
 impl<const N: usize> Limbs for [u64; N] where [u64; N]: Default {}
 
+pub struct MontgomeryParams<T: Limbs> {
+    r_squared: T,
+    p_inv: u64,
+}
+
 pub trait Field: fmt::Debug + Clone + Copy + PartialEq + Eq {
     type Limbs: Limbs;
     const MODULUS: Self::Limbs;
+    const PARAMS: MontgomeryParams<Self::Limbs>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
@@ -26,6 +32,15 @@ impl Field for Secp256k1FieldOrder {
         0xFFFFFFFFFFFFFFFF,
         0xFFFFFFFFFFFFFFFF,
     ];
+    const PARAMS: MontgomeryParams<[u64; 4]> = MontgomeryParams {
+        r_squared: [
+            0x000007A2000E90A1,
+            0x0000000000000001,
+            0x0000000000000000,
+            0x0000000000000000,
+        ],
+        p_inv: 0xD838091DD2253531,
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash)]
@@ -39,6 +54,15 @@ impl Field for Secp256k1GroupOrder {
         0xFFFFFFFFFFFFFFFE,
         0xFFFFFFFFFFFFFFFF,
     ];
+    const PARAMS: MontgomeryParams<[u64; 4]> = MontgomeryParams {
+        r_squared: [
+            0x896CF21467D7D140,
+            0x741496C20E7CF878,
+            0xE697F5E45BCD07C6,
+            0x9D671CD581C69BC5,
+        ],
+        p_inv: 0x4B0DFF665588B13F,
+    };
 }
 
 /// CSIDH-512 base field: p = 4·(ℓ₁·…·ℓ₇₄) − 1 where ℓᵢ runs over the 74
@@ -59,6 +83,19 @@ impl Field for Csidh512FieldOrder {
         0xFC8AB0D15E3E4C4A,
         0x65B48E8F740F89BF,
     ];
+    const PARAMS: MontgomeryParams<[u64; 8]> = MontgomeryParams {
+        r_squared: [
+            0x36905B572FFC1724,
+            0x67086F4525F1F27D,
+            0x4FAF3FBFD22370CA,
+            0x192EA214BCC584B1,
+            0x5DAE03EE2F5DE3D0,
+            0x1E9248731776B371,
+            0xAD5F166E20E4F52D,
+            0x4ED759AEA6F3917E,
+        ],
+        p_inv: 0x66C1301F632E294D,
+    };
 }
 
 /// Marker trait for prime fields with p ≡ 3 (mod 4), enabling the fast
@@ -92,17 +129,14 @@ impl<P: Field> FieldElement<P> {
     }
 
     pub fn from_u64(x: u64) -> Self {
-        let mut limbs = P::Limbs::default();
-        limbs.as_mut()[0] = x;
-        Self {
-            limbs,
-            _marker: PhantomData,
-        }
+        let mut canonical = P::Limbs::default();
+        canonical.as_mut()[0] = x;
+        Self::from_limbs_unchecked(canonical)
     }
 
-    pub const fn from_limbs_unchecked(limbs: P::Limbs) -> Self {
+    pub fn from_limbs_unchecked(canonical: P::Limbs) -> Self {
         Self {
-            limbs,
+            limbs: mont_mul::<P>(&canonical, &P::PARAMS.r_squared),
             _marker: PhantomData,
         }
     }
@@ -179,10 +213,8 @@ impl<P: Field> FieldElement<P> {
 
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
-        let (lo, hi) = wide_mul::<P>(&self.limbs, &rhs.limbs);
-        let limbs = reduce_wide::<P>(lo, hi);
         Self {
-            limbs,
+            limbs: mont_mul::<P>(&self.limbs, &rhs.limbs),
             _marker: PhantomData,
         }
     }
@@ -212,7 +244,22 @@ impl<P: Field> FieldElement<P> {
                 borrow = nb;
             }
         }
-        self.pow(exp)
+
+        let mut result = Self::one().limbs;
+
+        for &limb in exp.as_ref().iter().rev() {
+            for bit_idx in (0..u64::BITS).rev() {
+                result = mont_mul::<P>(&result, &result);
+                if (limb >> bit_idx) & 1 == 1 {
+                    result = mont_mul::<P>(&result, &self.limbs);
+                }
+            }
+        }
+
+        Self {
+            limbs: result,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -252,24 +299,24 @@ impl<P: Sqrt3Mod4> FieldElement<P> {
 
 impl<P: Field<Limbs = [u64; 4]>> FieldElement<P> {
     pub fn from_bytes_unchecked(bytes: [u8; 32]) -> Self {
-        let limbs = [
+        let canonical = [
             u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
             u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
             u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
             u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
         ];
-        Self {
-            limbs,
-            _marker: PhantomData,
-        }
+        Self::from_limbs_unchecked(canonical)
     }
 
     pub fn to_bytes_le(&self) -> [u8; 32] {
+        let mut one = [0u64; 4];
+        one[0] = 1;
+        let canonical = mont_mul::<P>(&self.limbs, &one);
         let mut bytes = [0u8; 32];
-        bytes[0..8].copy_from_slice(&self.limbs[0].to_le_bytes());
-        bytes[8..16].copy_from_slice(&self.limbs[1].to_le_bytes());
-        bytes[16..24].copy_from_slice(&self.limbs[2].to_le_bytes());
-        bytes[24..32].copy_from_slice(&self.limbs[3].to_le_bytes());
+        bytes[0..8].copy_from_slice(&canonical[0].to_le_bytes());
+        bytes[8..16].copy_from_slice(&canonical[1].to_le_bytes());
+        bytes[16..24].copy_from_slice(&canonical[2].to_le_bytes());
+        bytes[24..32].copy_from_slice(&canonical[3].to_le_bytes());
         bytes
     }
 }
@@ -320,40 +367,59 @@ fn ge_modulus<P: Field>(x: &P::Limbs) -> bool {
     true
 }
 
-#[inline]
-fn reduce_wide<P: Field>(lo: P::Limbs, hi: P::Limbs) -> P::Limbs {
-    let lo_slice = lo.as_ref();
-    let hi_slice = hi.as_ref();
-    let n = lo_slice.len();
+fn montgomery_reduce<P: Field>(mut lo: P::Limbs, mut hi: P::Limbs) -> P::Limbs {
+    let n = lo.as_ref().len();
     let m = P::MODULUS;
-    let m_slice = m.as_ref();
+    let p = m.as_ref();
+    let p_inv = P::PARAMS.p_inv;
+    let mut extra_carry = false;
 
-    let mut r = P::Limbs::default();
-    let total_bits = 2 * n * 64;
-    for bit_idx in (0..total_bits).rev() {
-        let r_slice = r.as_mut();
-        let top = r_slice[n - 1] >> 63;
-        for i in (1..n).rev() {
-            r_slice[i] = (r_slice[i] << 1) | (r_slice[i - 1] >> 63);
-        }
-        let limb_idx = bit_idx / 64;
-        let src_limb = if limb_idx < n {
-            lo_slice[limb_idx]
-        } else {
-            hi_slice[limb_idx - n]
-        };
-        r_slice[0] = (r_slice[0] << 1) | ((src_limb >> (bit_idx % 64)) & 1);
-
-        if top == 1 || ge_modulus::<P>(&r) {
-            let mut b = false;
-            for (i, ri) in r.as_mut().iter_mut().enumerate() {
-                let (d, nb) = ri.borrowing_sub(m_slice[i], b);
-                *ri = d;
-                b = nb;
+    for i in 0..n {
+        let m_i = lo.as_ref()[i].wrapping_mul(p_inv);
+        let mut carry = 0u64;
+        for (j, &pj) in p.iter().enumerate() {
+            let idx = i + j;
+            let cell = if idx < n {
+                lo.as_ref()[idx]
+            } else {
+                hi.as_ref()[idx - n]
+            };
+            let (prod, new_carry) = m_i.carrying_mul_add(pj, cell, carry);
+            if idx < n {
+                lo.as_mut()[idx] = prod;
+            } else {
+                hi.as_mut()[idx - n] = prod;
             }
+            carry = new_carry;
+        }
+        let mut k = i + n;
+        while carry != 0 && k < 2 * n {
+            let cell = hi.as_ref()[k - n];
+            let (v, nc) = cell.overflowing_add(carry);
+            hi.as_mut()[k - n] = v;
+            carry = if nc { 1 } else { 0 };
+            k += 1;
+        }
+        if carry != 0 {
+            extra_carry = true;
+        }
+    }
+
+    let mut r = hi;
+    if extra_carry || ge_modulus::<P>(&r) {
+        let mut b = false;
+        for (i, ri) in r.as_mut().iter_mut().enumerate() {
+            let (d, nb) = ri.borrowing_sub(p[i], b);
+            *ri = d;
+            b = nb;
         }
     }
     r
+}
+
+pub fn mont_mul<P: Field>(a: &P::Limbs, b: &P::Limbs) -> P::Limbs {
+    let (lo, hi) = wide_mul::<P>(a, b);
+    montgomery_reduce::<P>(lo, hi)
 }
 
 impl<P: Field> Add for FieldElement<P> {
@@ -491,28 +557,28 @@ mod tests {
     fn add_zero_plus_zero() {
         let a = Fp::from_limbs_unchecked([0, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([0, 0, 0, 0]);
-        assert_eq!((a + b).limbs, [0, 0, 0, 0]);
+        assert_eq!((a + b), Fp::from_limbs_unchecked([0, 0, 0, 0]));
     }
 
     #[test]
     fn add_one_plus_one() {
         let a = Fp::from_limbs_unchecked([1, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a + b).limbs, [2, 0, 0, 0]);
+        assert_eq!((a + b), Fp::from_limbs_unchecked([2, 0, 0, 0]));
     }
 
     #[test]
     fn add_p_minus_one_plus_one_wraps_to_zero() {
         let a = Fp::from_limbs_unchecked(p_minus(1));
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a + b).limbs, [0, 0, 0, 0]);
+        assert_eq!((a + b), Fp::from_limbs_unchecked([0, 0, 0, 0]));
     }
 
     #[test]
     fn add_overflows_field_order() {
         let a = Fp::from_limbs_unchecked(p_minus(1));
         let b = Fp::from_limbs_unchecked(p_minus(1));
-        assert_eq!((a + b).limbs, p_minus(2));
+        assert_eq!((a + b), Fp::from_limbs_unchecked(p_minus(2)));
     }
 
     #[test]
@@ -520,7 +586,7 @@ mod tests {
         let mut a = Fp::from_limbs_unchecked([5, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([7, 0, 0, 0]);
         a += b;
-        assert_eq!(a.limbs, [12, 0, 0, 0]);
+        assert_eq!(a, Fp::from_limbs_unchecked([12, 0, 0, 0]));
     }
 
     #[test]
@@ -528,83 +594,89 @@ mod tests {
         let mut a = Fp::from_limbs_unchecked(p_minus(3));
         let b = Fp::from_limbs_unchecked([5, 0, 0, 0]);
         a += &b;
-        assert_eq!(a.limbs, [2, 0, 0, 0]);
+        assert_eq!(a, Fp::from_limbs_unchecked([2, 0, 0, 0]));
     }
 
     #[test]
     fn add_carry_limb0_to_limb1() {
         let a = Fp::from_limbs_unchecked([u64::MAX, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a + b).limbs, [0, 1, 0, 0]);
+        assert_eq!((a + b), Fp::from_limbs_unchecked([0, 1, 0, 0]));
     }
 
     #[test]
     fn add_carry_limb1_to_limb2() {
         let a = Fp::from_limbs_unchecked([0, u64::MAX, 0, 0]);
         let b = Fp::from_limbs_unchecked([0, 1, 0, 0]);
-        assert_eq!((a + b).limbs, [0, 0, 1, 0]);
+        assert_eq!((a + b), Fp::from_limbs_unchecked([0, 0, 1, 0]));
     }
 
     #[test]
     fn add_carry_chain_across_all_limbs() {
         let a = Fp::from_limbs_unchecked([u64::MAX, u64::MAX, u64::MAX, 0]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a + b).limbs, [0, 0, 0, 1]);
+        assert_eq!((a + b), Fp::from_limbs_unchecked([0, 0, 0, 1]));
     }
 
     #[test]
     fn add_intra_limb_carry_with_nonzero_high() {
         let a = Fp::from_limbs_unchecked([u64::MAX, 5, 0, 0]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a + b).limbs, [0, 6, 0, 0]);
+        assert_eq!((a + b), Fp::from_limbs_unchecked([0, 6, 0, 0]));
     }
 
     #[test]
     fn add_carry_to_high_limb_below_modulus() {
         let a = Fp::from_limbs_unchecked([u64::MAX, u64::MAX, u64::MAX, 0x7FFFFFFFFFFFFFFF]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a + b).limbs, [0, 0, 0, 0x8000000000000000]);
+        assert_eq!(
+            (a + b),
+            Fp::from_limbs_unchecked([0, 0, 0, 0x8000000000000000])
+        );
     }
 
     #[test]
     fn sub_simple() {
         let a = Fp::from_limbs_unchecked([5, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([3, 0, 0, 0]);
-        assert_eq!((a - b).limbs, [2, 0, 0, 0]);
+        assert_eq!((a - b), Fp::from_limbs_unchecked([2, 0, 0, 0]));
     }
 
     #[test]
     fn sub_self_is_zero() {
         let a = Fp::from_limbs_unchecked(p_minus(1));
-        assert_eq!((a - a).limbs, [0, 0, 0, 0]);
+        assert_eq!((a - a), Fp::from_limbs_unchecked([0, 0, 0, 0]));
     }
 
     #[test]
     fn sub_underflow_wraps_via_modulus() {
         let a = Fp::from_limbs_unchecked([3, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([5, 0, 0, 0]);
-        assert_eq!((a - b).limbs, p_minus(2));
+        assert_eq!((a - b), Fp::from_limbs_unchecked(p_minus(2)));
     }
 
     #[test]
     fn sub_zero_minus_one_is_p_minus_one() {
         let a = Fp::from_limbs_unchecked([0, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a - b).limbs, p_minus(1));
+        assert_eq!((a - b), Fp::from_limbs_unchecked(p_minus(1)));
     }
 
     #[test]
     fn sub_borrow_limb1_to_limb0() {
         let a = Fp::from_limbs_unchecked([0, 1, 0, 0]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a - b).limbs, [u64::MAX, 0, 0, 0]);
+        assert_eq!((a - b), Fp::from_limbs_unchecked([u64::MAX, 0, 0, 0]));
     }
 
     #[test]
     fn sub_borrow_chain_across_all_limbs() {
         let a = Fp::from_limbs_unchecked([0, 0, 0, 1]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a - b).limbs, [u64::MAX, u64::MAX, u64::MAX, 0]);
+        assert_eq!(
+            (a - b),
+            Fp::from_limbs_unchecked([u64::MAX, u64::MAX, u64::MAX, 0])
+        );
     }
 
     #[test]
@@ -612,7 +684,7 @@ mod tests {
         let mut a = Fp::from_limbs_unchecked([10, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([4, 0, 0, 0]);
         a -= b;
-        assert_eq!(a.limbs, [6, 0, 0, 0]);
+        assert_eq!(a, Fp::from_limbs_unchecked([6, 0, 0, 0]));
     }
 
     #[test]
@@ -620,54 +692,57 @@ mod tests {
         let mut a = Fp::from_limbs_unchecked([0, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([1, 0, 0, 0]);
         a -= &b;
-        assert_eq!(a.limbs, p_minus(1));
+        assert_eq!(a, Fp::from_limbs_unchecked(p_minus(1)));
     }
 
     #[test]
     fn mul_zero() {
         let a = Fp::from_limbs_unchecked([12345, 6789, 0, 0]);
         let zero = Fp::from_limbs_unchecked([0, 0, 0, 0]);
-        assert_eq!((a * zero).limbs, [0, 0, 0, 0]);
+        assert_eq!((a * zero), Fp::from_limbs_unchecked([0, 0, 0, 0]));
     }
 
     #[test]
     fn mul_one_is_identity() {
         let a = Fp::from_limbs_unchecked([0xDEAD, 0xBEEF, 0xCAFE, 0xF00D]);
         let one = Fp::from_limbs_unchecked([1, 0, 0, 0]);
-        assert_eq!((a * one).limbs, [0xDEAD, 0xBEEF, 0xCAFE, 0xF00D]);
+        assert_eq!(
+            (a * one),
+            Fp::from_limbs_unchecked([0xDEAD, 0xBEEF, 0xCAFE, 0xF00D])
+        );
     }
 
     #[test]
     fn mul_small_no_reduction() {
         let a = Fp::from_limbs_unchecked([5, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([7, 0, 0, 0]);
-        assert_eq!((a * b).limbs, [35, 0, 0, 0]);
+        assert_eq!((a * b), Fp::from_limbs_unchecked([35, 0, 0, 0]));
     }
 
     #[test]
     fn mul_2_to_128_squared_reduces_to_c() {
         let a = Fp::from_limbs_unchecked([0, 0, 1, 0]);
-        assert_eq!((a * a).limbs, [0x1_0000_03D1, 0, 0, 0]);
+        assert_eq!((a * a), Fp::from_limbs_unchecked([0x1_0000_03D1, 0, 0, 0]));
     }
 
     #[test]
     fn mul_neg_one_squared_is_one() {
         let neg_one = Fp::from_limbs_unchecked(p_minus(1));
-        assert_eq!((neg_one * neg_one).limbs, [1, 0, 0, 0]);
+        assert_eq!((neg_one * neg_one), Fp::from_limbs_unchecked([1, 0, 0, 0]));
     }
 
     #[test]
     fn mul_neg_one_times_x_is_neg_x() {
         let neg_one = Fp::from_limbs_unchecked(p_minus(1));
         let x = Fp::from_limbs_unchecked([12345, 0, 0, 0]);
-        assert_eq!((neg_one * x).limbs, p_minus(12345));
+        assert_eq!((neg_one * x), Fp::from_limbs_unchecked(p_minus(12345)));
     }
 
     #[test]
     fn mul_commutative() {
         let a = Fp::from_limbs_unchecked([0x1234_5678_9ABC_DEF0, 0xFEDC_BA98_7654_3210, 7, 11]);
         let b = Fp::from_limbs_unchecked([0xAAAA_BBBB_CCCC_DDDD, 13, 0, 0xEEEE]);
-        assert_eq!((a * b).limbs, (b * a).limbs);
+        assert_eq!(a * b, b * a);
     }
 
     #[test]
@@ -675,7 +750,7 @@ mod tests {
         let mut a = Fp::from_limbs_unchecked([3, 0, 0, 0]);
         let b = Fp::from_limbs_unchecked([4, 0, 0, 0]);
         a *= b;
-        assert_eq!(a.limbs, [12, 0, 0, 0]);
+        assert_eq!(a, Fp::from_limbs_unchecked([12, 0, 0, 0]));
     }
 
     #[test]
@@ -683,54 +758,57 @@ mod tests {
         let mut a = Fp::from_limbs_unchecked(p_minus(1));
         let b = Fp::from_limbs_unchecked(p_minus(1));
         a *= &b;
-        assert_eq!(a.limbs, [1, 0, 0, 0]);
+        assert_eq!(a, Fp::from_limbs_unchecked([1, 0, 0, 0]));
     }
 
     #[test]
     fn pow_by_zero_is_one() {
         let a = Fp::from_limbs_unchecked([12345, 67890, 0, 0]);
-        assert_eq!(a.pow([0, 0, 0, 0]).limbs, [1, 0, 0, 0]);
+        assert_eq!(a.pow([0, 0, 0, 0]), Fp::from_limbs_unchecked([1, 0, 0, 0]));
     }
 
     #[test]
     fn pow_by_one_is_identity() {
         let a = Fp::from_limbs_unchecked([0xDEAD, 0xBEEF, 0xCAFE, 0xF00D]);
-        assert_eq!(a.pow([1, 0, 0, 0]).limbs, [0xDEAD, 0xBEEF, 0xCAFE, 0xF00D]);
+        assert_eq!(
+            a.pow([1, 0, 0, 0]),
+            Fp::from_limbs_unchecked([0xDEAD, 0xBEEF, 0xCAFE, 0xF00D])
+        );
     }
 
     #[test]
     fn pow_by_two_equals_square() {
         let a = Fp::from_limbs_unchecked([7, 0, 0, 0]);
-        assert_eq!(a.pow([2, 0, 0, 0]).limbs, (a * a).limbs);
+        assert_eq!(a.pow([2, 0, 0, 0]), a * a);
     }
 
     #[test]
     fn inv_of_one_is_one() {
-        assert_eq!(Fp::one().inv().limbs, [1, 0, 0, 0]);
+        assert_eq!(Fp::one().inv(), Fp::from_limbs_unchecked([1, 0, 0, 0]));
     }
 
     #[test]
     fn inv_of_neg_one_is_neg_one() {
         let neg_one = Fp::from_limbs_unchecked(p_minus(1));
-        assert_eq!(neg_one.inv().limbs, p_minus(1));
+        assert_eq!(neg_one.inv(), Fp::from_limbs_unchecked(p_minus(1)));
     }
 
     #[test]
     fn x_times_inv_x_is_one_small() {
         let a = Fp::from_limbs_unchecked([7, 0, 0, 0]);
-        assert_eq!((a * a.inv()).limbs, [1, 0, 0, 0]);
+        assert_eq!((a * a.inv()), Fp::from_limbs_unchecked([1, 0, 0, 0]));
     }
 
     #[test]
     fn x_times_inv_x_is_one_multi_limb() {
         let a = Fp::from_limbs_unchecked([0xDEAD_BEEF_CAFE_F00D, 0xABCD, 0x1234, 0x5678]);
-        assert_eq!((a * a.inv()).limbs, [1, 0, 0, 0]);
+        assert_eq!((a * a.inv()), Fp::from_limbs_unchecked([1, 0, 0, 0]));
     }
 
     #[test]
     fn inv_of_zero_is_zero() {
         let zero = Fp::from_limbs_unchecked([0, 0, 0, 0]);
-        assert_eq!(zero.inv().limbs, [0, 0, 0, 0]);
+        assert_eq!(zero.inv(), Fp::from_limbs_unchecked([0, 0, 0, 0]));
     }
 
     #[test]
@@ -748,7 +826,7 @@ mod tests {
             *i = 0xFF;
         }
         let a = Fp::from_bytes_unchecked(bytes);
-        assert_eq!(a.limbs, P);
+        assert_eq!(a, Fp::from_limbs_unchecked(P));
     }
 
     #[test]
