@@ -298,7 +298,7 @@ impl<F: Field<Limbs = [u64; 4]>> Scalar<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field::{Secp256k1FieldOrder as Fp, Secp256k1GroupOrder};
+    use field::{MontgomeryParams, Secp256k1FieldOrder as Fp, Secp256k1GroupOrder};
 
     type Fe = FieldElement<Fp>;
     type Pt = Point<Fp>;
@@ -617,6 +617,60 @@ mod tests {
             }
         }
         assert!(E.lift(Fe::zero()).is_none());
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Fp13;
+
+    impl Field for Fp13 {
+        type Limbs = [u64; 1];
+        const MODULUS: [u64; 1] = [13];
+        const PARAMS: MontgomeryParams<[u64; 1]> = MontgomeryParams::new([9], 0xB13B13B13B13B13B);
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Fr7;
+
+    impl Field for Fr7 {
+        type Limbs = [u64; 1];
+        const MODULUS: [u64; 1] = [7];
+        const PARAMS: MontgomeryParams<[u64; 1]> = MontgomeryParams::new([4], 0x9249249249249249);
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct TinyCurve;
+
+    impl Curve<Fp13> for TinyCurve {
+        fn a(&self) -> FieldElement<Fp13> {
+            FieldElement::zero()
+        }
+        fn b(&self) -> FieldElement<Fp13> {
+            FieldElement::from_u64(7)
+        }
+    }
+
+    fn tiny_g() -> Point<Fp13> {
+        Point::from_affine(FieldElement::from_u64(7), FieldElement::from_u64(5))
+    }
+
+    #[test]
+    fn tiny_curve_generator_has_order_seven() {
+        let g = tiny_g();
+        let mut acc = Point::infinity();
+        for _ in 0..7 {
+            acc = TinyCurve.add(acc, g);
+        }
+        assert!(acc.is_infinity());
+    }
+
+    #[test]
+    fn tiny_curve_scalar_mul_matches_iterated_add() {
+        let g = tiny_g();
+        let mut acc = Point::infinity();
+        for k in 0..7u64 {
+            assert_eq!(TinyCurve.multiply(Scalar::<Fr7>::from_u64(k), g), acc);
+            acc = TinyCurve.add(acc, g);
+        }
     }
 
     #[test]

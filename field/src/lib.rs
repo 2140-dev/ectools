@@ -15,6 +15,12 @@ pub struct MontgomeryParams<T: Limbs> {
     p_inv: u64,
 }
 
+impl<T: Limbs> MontgomeryParams<T> {
+    pub const fn new(r_squared: T, p_inv: u64) -> Self {
+        Self { r_squared, p_inv }
+    }
+}
+
 pub trait Field: fmt::Debug + Clone + Copy + PartialEq + Eq {
     type Limbs: Limbs;
     const MODULUS: Self::Limbs;
