@@ -213,14 +213,22 @@ impl<F: Field> Point<F> {
     }
 
     fn mul<G: Field>(&self, scalar: Scalar<G>, a: FieldElement<F>) -> Self {
+        let mut table = [Self::infinity(); 16];
+        table[1] = *self;
+        for k in 2..16 {
+            table[k] = table[k - 1].add(self, a);
+        }
+
+        let limbs = scalar.0.as_ref();
+        let n_windows = limbs.len() * 16;
         let mut result = Self::infinity();
-        for &limb in scalar.0.as_ref().iter().rev() {
-            for bit_idx in (0..u64::BITS).rev() {
-                result = result.double(a);
-                if (limb >> bit_idx) & 1 == 1 {
-                    result = result.add(self, a);
-                }
-            }
+        for i in (0..n_windows).rev() {
+            result = result.double(a);
+            result = result.double(a);
+            result = result.double(a);
+            result = result.double(a);
+            let chunk = ((limbs[i / 16] >> ((i % 16) * 4)) & 0xF) as usize;
+            result = result.add(&table[chunk], a);
         }
         result
     }
