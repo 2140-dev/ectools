@@ -351,8 +351,7 @@ pub fn mont_mul<P: Field>(a: &P::Limbs, b: &P::Limbs) -> P::Limbs {
         {
             let t_mut = t.as_mut();
             for j in 0..n {
-                let prod =
-                    (a[j] as u128) * (bi as u128) + (t_mut[j] as u128) + (carry as u128);
+                let prod = (a[j] as u128) * (bi as u128) + (t_mut[j] as u128) + (carry as u128);
                 t_mut[j] = prod as u64;
                 carry = (prod >> 64) as u64;
             }
@@ -367,9 +366,7 @@ pub fn mont_mul<P: Field>(a: &P::Limbs, b: &P::Limbs) -> P::Limbs {
         {
             let t_mut = t.as_mut();
             for j in 1..n {
-                let prod = (mm as u128) * (p[j] as u128)
-                    + (t_mut[j] as u128)
-                    + (carry as u128);
+                let prod = (mm as u128) * (p[j] as u128) + (t_mut[j] as u128) + (carry as u128);
                 t_mut[j - 1] = prod as u64;
                 carry = (prod >> 64) as u64;
             }
