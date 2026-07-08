@@ -322,39 +322,6 @@ impl<P: Field<Limbs = [u64; 4]>> FieldElement<P> {
 }
 
 #[inline]
-fn wide_mul<P: Field>(a: &P::Limbs, b: &P::Limbs) -> (P::Limbs, P::Limbs) {
-    let a_slice = a.as_ref();
-    let b_slice = b.as_ref();
-    let n = a_slice.len();
-    let mut lo = P::Limbs::default();
-    let mut hi = P::Limbs::default();
-    {
-        let lo_slice = lo.as_mut();
-        let hi_slice = hi.as_mut();
-        for i in 0..n {
-            let mut carry = 0u64;
-            for (j, &bj) in b_slice.iter().enumerate() {
-                let idx = i + j;
-                let cell = if idx < n {
-                    lo_slice[idx]
-                } else {
-                    hi_slice[idx - n]
-                };
-                let (product, new_carry) = a_slice[i].carrying_mul_add(bj, cell, carry);
-                if idx < n {
-                    lo_slice[idx] = product;
-                } else {
-                    hi_slice[idx - n] = product;
-                }
-                carry = new_carry;
-            }
-            hi_slice[i] = carry;
-        }
-    }
-    (lo, hi)
-}
-
-#[inline]
 fn ge_modulus<P: Field>(x: &P::Limbs) -> bool {
     let x_slice = x.as_ref();
     let m = P::MODULUS;
@@ -367,59 +334,64 @@ fn ge_modulus<P: Field>(x: &P::Limbs) -> bool {
     true
 }
 
-fn montgomery_reduce<P: Field>(mut lo: P::Limbs, mut hi: P::Limbs) -> P::Limbs {
-    let n = lo.as_ref().len();
+pub fn mont_mul<P: Field>(a: &P::Limbs, b: &P::Limbs) -> P::Limbs {
+    let a = a.as_ref();
+    let b = b.as_ref();
     let m = P::MODULUS;
     let p = m.as_ref();
     let p_inv = P::PARAMS.p_inv;
-    let mut extra_carry = false;
+    let n = a.len();
 
-    for i in 0..n {
-        let m_i = lo.as_ref()[i].wrapping_mul(p_inv);
+    let mut t = P::Limbs::default();
+    let mut t_hi: u64 = 0;
+    let mut t_hi1: u64 = 0;
+
+    for &bi in b {
         let mut carry = 0u64;
-        for (j, &pj) in p.iter().enumerate() {
-            let idx = i + j;
-            let cell = if idx < n {
-                lo.as_ref()[idx]
-            } else {
-                hi.as_ref()[idx - n]
-            };
-            let (prod, new_carry) = m_i.carrying_mul_add(pj, cell, carry);
-            if idx < n {
-                lo.as_mut()[idx] = prod;
-            } else {
-                hi.as_mut()[idx - n] = prod;
+        {
+            let t_mut = t.as_mut();
+            for j in 0..n {
+                let prod =
+                    (a[j] as u128) * (bi as u128) + (t_mut[j] as u128) + (carry as u128);
+                t_mut[j] = prod as u64;
+                carry = (prod >> 64) as u64;
             }
-            carry = new_carry;
         }
-        let mut k = i + n;
-        while carry != 0 && k < 2 * n {
-            let cell = hi.as_ref()[k - n];
-            let (v, nc) = cell.overflowing_add(carry);
-            hi.as_mut()[k - n] = v;
-            carry = if nc { 1 } else { 0 };
-            k += 1;
+        let s = (t_hi as u128) + (carry as u128);
+        t_hi = s as u64;
+        t_hi1 = t_hi1.wrapping_add((s >> 64) as u64);
+
+        let mm = t.as_ref()[0].wrapping_mul(p_inv);
+        let prod0 = (mm as u128) * (p[0] as u128) + (t.as_ref()[0] as u128);
+        let mut carry = (prod0 >> 64) as u64;
+        {
+            let t_mut = t.as_mut();
+            for j in 1..n {
+                let prod = (mm as u128) * (p[j] as u128)
+                    + (t_mut[j] as u128)
+                    + (carry as u128);
+                t_mut[j - 1] = prod as u64;
+                carry = (prod >> 64) as u64;
+            }
         }
-        if carry != 0 {
-            extra_carry = true;
-        }
+        let s = (t_hi as u128) + (carry as u128);
+        t.as_mut()[n - 1] = s as u64;
+        let cout = (s >> 64) as u64;
+        let s2 = (t_hi1 as u128) + (cout as u128);
+        t_hi = s2 as u64;
+        t_hi1 = (s2 >> 64) as u64;
     }
 
-    let mut r = hi;
-    if extra_carry || ge_modulus::<P>(&r) {
-        let mut b = false;
-        for (i, ri) in r.as_mut().iter_mut().enumerate() {
-            let (d, nb) = ri.borrowing_sub(p[i], b);
-            *ri = d;
-            b = nb;
+    if t_hi != 0 || ge_modulus::<P>(&t) {
+        let t_mut = t.as_mut();
+        let mut borrow = false;
+        for i in 0..n {
+            let (d, nb) = t_mut[i].borrowing_sub(p[i], borrow);
+            t_mut[i] = d;
+            borrow = nb;
         }
     }
-    r
-}
-
-pub fn mont_mul<P: Field>(a: &P::Limbs, b: &P::Limbs) -> P::Limbs {
-    let (lo, hi) = wide_mul::<P>(a, b);
-    montgomery_reduce::<P>(lo, hi)
+    t
 }
 
 impl<P: Field> Add for FieldElement<P> {
