@@ -3,6 +3,10 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
+pub mod extension;
+
+pub use extension::{Csidh512Fp2, ExtensionField, ExtensionFieldElement, NonResidueMinusOne};
+
 pub trait Limbs:
     Copy + fmt::Debug + PartialEq + Eq + Hash + AsRef<[u64]> + AsMut<[u64]> + Default
 {
