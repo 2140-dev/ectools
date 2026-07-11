@@ -25,7 +25,7 @@ impl<T: Limbs> MontgomeryParams<T> {
     }
 }
 
-pub trait Field: fmt::Debug + Clone + Copy + PartialEq + Eq {
+pub trait Field: fmt::Debug + Clone + Copy + PartialEq + Eq + Hash {
     type Limbs: Limbs;
     const MODULUS: Self::Limbs;
     const PARAMS: MontgomeryParams<Self::Limbs>;

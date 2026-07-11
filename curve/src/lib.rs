@@ -2,6 +2,14 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use field::{Field, FieldElement, Secp256k1FieldOrder, Secp256k1GroupOrder, Sqrt3Mod4};
 
+pub mod montgomery;
+
+pub use montgomery::{
+    Csidh512BaseCurve, ExtensionMontgomeryCurve, ExtensionMontgomeryPoint,
+    ExtensionMontgomeryPointRepresentation, MontgomeryCurve, MontgomeryPoint,
+    MontgomeryPointRepresentation,
+};
+
 pub trait Curve<F: Field>: fmt::Debug + Clone + Copy + PartialEq + Eq {
     fn a(&self) -> FieldElement<F>;
     fn b(&self) -> FieldElement<F>;
@@ -619,7 +627,7 @@ mod tests {
         assert!(E.lift(Fe::zero()).is_none());
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     struct Fp13;
 
     impl Field for Fp13 {
@@ -628,7 +636,7 @@ mod tests {
         const PARAMS: MontgomeryParams<[u64; 1]> = MontgomeryParams::new([9], 0xB13B13B13B13B13B);
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     struct Fr7;
 
     impl Field for Fr7 {
