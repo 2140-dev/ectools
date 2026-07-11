@@ -1,10 +1,11 @@
 use core::fmt;
+use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 use crate::{Csidh512FieldOrder, Field, FieldElement, Sqrt3Mod4};
 
-pub trait ExtensionField: fmt::Debug + Clone + Copy + PartialEq + Eq {
+pub trait ExtensionField: fmt::Debug + Clone + Copy + PartialEq + Eq + Hash {
     type Base: Field;
     fn non_residue() -> FieldElement<Self::Base>;
 
