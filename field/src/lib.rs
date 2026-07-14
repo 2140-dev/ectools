@@ -258,6 +258,12 @@ impl<P: Field> FieldElement<P> {
         result
     }
 
+    pub fn pow_u64(&self, exp: u64) -> Self {
+        let mut limbs = P::Limbs::default();
+        limbs.as_mut()[0] = exp;
+        self.pow(limbs)
+    }
+
     pub fn inv(&self) -> Self {
         let mut exp = P::MODULUS;
         {
@@ -927,5 +933,31 @@ mod tests {
         p_plus_one[0] = p_plus_one[0].wrapping_add(1);
         assert!(Fp::from_limbs_checked(p_plus_one).is_none());
         assert!(Fp::from_limbs_checked([u64::MAX; 4]).is_none());
+    }
+
+    #[test]
+    fn pow_u64_zero_exponent_is_one() {
+        let a = Fp::from_limbs_unchecked([7, 0, 0, 0]);
+        assert_eq!(a.pow_u64(0), Fp::one());
+    }
+
+    #[test]
+    fn pow_u64_one_exponent_is_self() {
+        let a = Fp::from_limbs_unchecked([7, 0, 0, 0]);
+        assert_eq!(a.pow_u64(1), a);
+    }
+
+    #[test]
+    fn pow_u64_small_exponent_matches_repeated_mul() {
+        let a = Fp::from_limbs_unchecked([3, 0, 0, 0]);
+        let expected = a * a * a * a * a;
+        assert_eq!(a.pow_u64(5), expected);
+    }
+
+    #[test]
+    fn pow_u64_matches_pow_with_padded_limbs() {
+        let a = Fp::from_limbs_unchecked([123456789, 0, 0, 0]);
+        let exp: u64 = 0xDEAD_BEEF_CAFE_BABE;
+        assert_eq!(a.pow_u64(exp), a.pow([exp, 0, 0, 0]));
     }
 }
