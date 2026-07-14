@@ -151,6 +151,22 @@ impl<P: Field> FieldElement<P> {
         }
     }
 
+    pub fn from_limbs_checked(canonical: P::Limbs) -> Option<Self> {
+        let m = P::MODULUS;
+        let m_slice = m.as_ref();
+        let c_slice = canonical.as_ref();
+        let mut br = false;
+        for i in 0..c_slice.len() {
+            let (_, nb) = c_slice[i].borrowing_sub(m_slice[i], br);
+            br = nb;
+        }
+        if br {
+            Some(Self::from_limbs_unchecked(canonical))
+        } else {
+            None
+        }
+    }
+
     pub fn add(&self, rhs: &Self) -> Self {
         let a = self.limbs.as_ref();
         let b = rhs.limbs.as_ref();
@@ -240,6 +256,12 @@ impl<P: Field> FieldElement<P> {
             }
         }
         result
+    }
+
+    pub fn pow_u64(&self, exp: u64) -> Self {
+        let mut limbs = P::Limbs::default();
+        limbs.as_mut()[0] = exp;
+        self.pow(limbs)
     }
 
     pub fn inv(&self) -> Self {
@@ -886,5 +908,56 @@ mod tests {
     fn csidh_modulus_is_congruent_to_3_mod_4() {
         // Precondition for the sqrt formula: p ≡ 3 (mod 4).
         assert_eq!(Csidh512FieldOrder::MODULUS[0] & 0b11, 0b11);
+    }
+
+    #[test]
+    fn from_limbs_checked_accepts_canonical() {
+        assert_eq!(
+            Fp::from_limbs_checked([0, 0, 0, 0]),
+            Some(Fp::from_limbs_unchecked([0, 0, 0, 0])),
+        );
+        assert_eq!(
+            Fp::from_limbs_checked([1, 0, 0, 0]),
+            Some(Fp::from_limbs_unchecked([1, 0, 0, 0])),
+        );
+        assert_eq!(
+            Fp::from_limbs_checked(p_minus(1)),
+            Some(Fp::from_limbs_unchecked(p_minus(1))),
+        );
+    }
+
+    #[test]
+    fn from_limbs_checked_rejects_modulus_and_above() {
+        assert!(Fp::from_limbs_checked(P).is_none());
+        let mut p_plus_one = P;
+        p_plus_one[0] = p_plus_one[0].wrapping_add(1);
+        assert!(Fp::from_limbs_checked(p_plus_one).is_none());
+        assert!(Fp::from_limbs_checked([u64::MAX; 4]).is_none());
+    }
+
+    #[test]
+    fn pow_u64_zero_exponent_is_one() {
+        let a = Fp::from_limbs_unchecked([7, 0, 0, 0]);
+        assert_eq!(a.pow_u64(0), Fp::one());
+    }
+
+    #[test]
+    fn pow_u64_one_exponent_is_self() {
+        let a = Fp::from_limbs_unchecked([7, 0, 0, 0]);
+        assert_eq!(a.pow_u64(1), a);
+    }
+
+    #[test]
+    fn pow_u64_small_exponent_matches_repeated_mul() {
+        let a = Fp::from_limbs_unchecked([3, 0, 0, 0]);
+        let expected = a * a * a * a * a;
+        assert_eq!(a.pow_u64(5), expected);
+    }
+
+    #[test]
+    fn pow_u64_matches_pow_with_padded_limbs() {
+        let a = Fp::from_limbs_unchecked([123456789, 0, 0, 0]);
+        let exp: u64 = 0xDEAD_BEEF_CAFE_BABE;
+        assert_eq!(a.pow_u64(exp), a.pow([exp, 0, 0, 0]));
     }
 }
