@@ -293,6 +293,10 @@ impl<P: Field> FieldElement<P> {
             _marker: PhantomData,
         }
     }
+
+    pub fn normalize_by(&self, denom: Self) -> Self {
+        *self * denom.inv()
+    }
 }
 
 impl<P: Sqrt3Mod4> FieldElement<P> {
